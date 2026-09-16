@@ -8,6 +8,7 @@ typedef enum {
     AST_STRING,
     AST_INTEGER,
     AST_BOOLEAN,
+    AST_NONE,
     AST_CALL,
     AST_VARIABLE_DECLARATION,
     AST_VARIABLE_REFERENCE,
@@ -119,6 +120,7 @@ void ast_program_add(AstNode *program, AstNode *statement);
 AstNode *ast_create_string(const char *value);
 AstNode *ast_create_integer(long value);
 AstNode *ast_create_boolean(int boolean);
+AstNode *ast_create_none(void);
 
 AstNode *ast_create_call(
     const char *name,

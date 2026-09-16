@@ -348,6 +348,9 @@ static int value_equals(const Value *left, const Value *right)
         case VALUE_BOOL:
             return left->boolean == right->boolean;
 
+        case VALUE_NONE:
+            return 1;
+
         case VALUE_ARRAY:
             if (left->array.count != right->array.count)
             {
@@ -1089,6 +1092,11 @@ static Value evaluate(
         return value_bool(node->boolean.value);
     }
 
+    if (node->type == AST_NONE)
+    {
+        return value_none();
+    }
+
     if (node->type == AST_ARRAY)
     {
         Value array = value_array(node->array.count);
@@ -1366,6 +1374,28 @@ static Value evaluate(
             environment
         );
 
+        if (left.type == VALUE_NONE &&
+            right.type == VALUE_NONE)
+        {
+            switch (node->binary.operator)
+            {
+                case TOKEN_EQUAL_EQUAL:
+                    return value_bool(1);
+
+                case TOKEN_BANG_EQUAL:
+                    return value_bool(0);
+
+                default:
+                    value_free(&left);
+                    value_free(&right);
+                    fprintf(
+                        stderr,
+                        "Syger runtime error: unsupported none operator.\n"
+                    );
+                    exit(1);
+            }
+        }
+
         if (left.type == VALUE_STRING &&
             right.type == VALUE_STRING)
         {
@@ -1570,6 +1600,7 @@ static ExecutionResult execute(
         case AST_STRING:
         case AST_INTEGER:
         case AST_BOOLEAN:
+        case AST_NONE:
         case AST_VARIABLE_REFERENCE:
         case AST_BINARY:
         case AST_UNARY:

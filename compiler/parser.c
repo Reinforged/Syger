@@ -209,6 +209,13 @@ static AstNode *parse_primary(Parser *parser)
         return parse_postfix(parser, node);
     }
 
+    if (parser->current.type == TOKEN_NONE)
+    {
+        advance(parser);
+        node = ast_create_none();
+        return parse_postfix(parser, node);
+    }
+
     if (parser->current.type == TOKEN_MINUS)
     {
         TokenType operator = parser->current.type;

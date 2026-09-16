@@ -98,6 +98,21 @@ AstNode *ast_create_boolean(int boolean)
     return node;
 }
 
+AstNode *ast_create_none(void)
+{
+    AstNode *node = malloc(sizeof(AstNode));
+
+    if (node == NULL)
+    {
+        fprintf(stderr, "Syger: out of memory.\n");
+        exit(1);
+    }
+
+    node->type = AST_NONE;
+
+    return node;
+}
+
 AstNode *ast_create_call(
     const char *name,
     AstNode **arguments,
@@ -409,6 +424,10 @@ void ast_print(AstNode *node, int indent) {
             );
             break;
 
+        case AST_NONE:
+            printf("None\n");
+            break;
+
         case AST_CALL:
             print_indent(indent);
             printf("CALL %s\n", node->call.name);
@@ -630,6 +649,9 @@ void ast_free(AstNode *node)
             break;
 
         case AST_BOOLEAN:
+            break;
+
+        case AST_NONE:
             break;
 
         case AST_CALL:

@@ -27,6 +27,7 @@ typedef enum {
     TOKEN_CONTINUE,
     TOKEN_TRUE,
     TOKEN_FALSE,
+    TOKEN_NONE,
     TOKEN_AND,
     TOKEN_OR,
     TOKEN_NOT,

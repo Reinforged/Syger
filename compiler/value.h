@@ -5,6 +5,7 @@ typedef enum {
     VALUE_STRING,
     VALUE_INT,
     VALUE_BOOL,
+    VALUE_NONE,
     VALUE_ARRAY
 } ValueType;
 
@@ -27,6 +28,7 @@ struct Value {
 Value value_string(const char *string);
 Value value_int(long integer);
 Value value_bool(int boolean);
+Value value_none(void);
 Value value_array(int count);
 Value value_copy(const Value *value);
 

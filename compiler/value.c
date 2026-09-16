@@ -51,6 +51,15 @@ Value value_bool(int boolean)
     return value;
 }
 
+Value value_none(void)
+{
+    Value value;
+
+    value.type = VALUE_NONE;
+
+    return value;
+}
+
 Value value_array(int count)
 {
     Value value;
@@ -97,7 +106,12 @@ Value value_copy(const Value *value)
         return value_int(value->integer);
     }
 
-    return value_bool(value->boolean);
+    if (value->type == VALUE_BOOL)
+    {
+        return value_bool(value->boolean);
+    }
+
+    return value_none();
 }
 
 void value_free(Value *value)
@@ -134,6 +148,10 @@ static void value_print_inline(const Value *value)
 
         case VALUE_BOOL:
             printf("%s", value->boolean ? "true" : "false");
+            break;
+
+        case VALUE_NONE:
+            printf("none");
             break;
 
         case VALUE_ARRAY:

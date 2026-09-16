@@ -17,6 +17,22 @@ print(falsehood)
 
 print("")
 
+print("=== NONE ===")
+
+value = none
+print(value)
+print(value == none)
+print(value != none)
+
+fun no_value()
+    return none
+
+result = no_value()
+print(result)
+print(result == none)
+
+print("")
+
 print("=== STRING OPERATIONS ===")
 
 name = "Reinforged"
