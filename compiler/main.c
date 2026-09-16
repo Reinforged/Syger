@@ -4,6 +4,7 @@
 #include "lexer.h"
 #include "parser.h"
 #include "ast.h"
+#include "interpreter.h"
 
 static char *read_file(const char *path) {
     FILE *file = fopen(path, "rb");
@@ -41,7 +42,7 @@ static char *read_file(const char *path) {
 
 int main(int argc, char **argv) {
     if (argc != 2) {
-        fprintf(stderr, "Usage: surge <file.sg>\n");
+        fprintf(stderr, "Usage: Syger <file.sg>\n");
         return 1;
     }
 
@@ -55,7 +56,7 @@ int main(int argc, char **argv) {
 
     AstNode *ast = parser_parse(&parser);
 
-    ast_print(ast, 0);
+    interpreter_run(ast);
 
     ast_free(ast);
     free(source);

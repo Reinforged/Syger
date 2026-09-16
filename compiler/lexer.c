@@ -290,7 +290,7 @@ static Token handle_indentation(Lexer *lexer)
         {
             fprintf(
                 stderr,
-                "Surge lexer error: maximum indentation depth exceeded.\n"
+                "Syger lexer error: maximum indentation depth exceeded.\n"
             );
             exit(1);
         }
@@ -318,7 +318,7 @@ static Token handle_indentation(Lexer *lexer)
         {
             fprintf(
                 stderr,
-                "Surge lexer error: inconsistent indentation.\n"
+                "Syger lexer error: inconsistent indentation.\n"
             );
             exit(1);
         }

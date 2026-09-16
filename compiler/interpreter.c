@@ -40,7 +40,7 @@ static Environment *environment_create(Environment *parent)
 
     if (environment == NULL)
     {
-        fprintf(stderr, "Surge: out of memory.\n");
+        fprintf(stderr, "Syger: out of memory.\n");
         exit(1);
     }
     
@@ -114,7 +114,7 @@ static void set_variable(
 
     if (variables == NULL)
     {
-        fprintf(stderr, "Surge: out of memory.\n");
+        fprintf(stderr, "Syger: out of memory.\n");
         exit(1);
     }
 
@@ -127,7 +127,7 @@ static void set_variable(
 
     if (new_variable->name == NULL)
     {
-        fprintf(stderr, "Surge: out of memory.\n");
+        fprintf(stderr, "Syger: out of memory.\n");
         exit(1);
     }
 
@@ -187,7 +187,7 @@ static void define_function(
 
     if (functions == NULL)
     {
-        fprintf(stderr, "Surge: out of memory.\n");
+        fprintf(stderr, "Syger: out of memory.\n");
         exit(1);
     }
 
@@ -200,7 +200,7 @@ static void define_function(
 
     if (new_function->name == NULL)
     {
-        fprintf(stderr, "Surge: out of memory.\n");
+        fprintf(stderr, "Syger: out of memory.\n");
         exit(1);
     }
 
@@ -218,7 +218,7 @@ static void define_function(
 
         if (new_function->parameters == NULL)
         {
-            fprintf(stderr, "Surge: out of memory.\n");
+            fprintf(stderr, "Syger: out of memory.\n");
             exit(1);
         }
     }
@@ -230,7 +230,7 @@ static void define_function(
 
         if (new_function->parameters[i] == NULL)
         {
-            fprintf(stderr, "Surge: out of memory.\n");
+            fprintf(stderr, "Syger: out of memory.\n");
             exit(1);
         }
 
@@ -270,7 +270,7 @@ static Value *resolve_array_element(
         {
             fprintf(
                 stderr,
-                "Surge runtime error: variable '%s' is not defined.\n",
+                "Syger runtime error: variable '%s' is not defined.\n",
                 node->variable_reference.name
             );
             exit(1);
@@ -293,7 +293,7 @@ static Value *resolve_array_element(
             value_free(&index);
             fprintf(
                 stderr,
-                "Surge runtime error: indexing requires an array.\n"
+                "Syger runtime error: indexing requires an array.\n"
             );
             exit(1);
         }
@@ -303,7 +303,7 @@ static Value *resolve_array_element(
             value_free(&index);
             fprintf(
                 stderr,
-                "Surge runtime error: array index must be an integer.\n"
+                "Syger runtime error: array index must be an integer.\n"
             );
             exit(1);
         }
@@ -313,7 +313,7 @@ static Value *resolve_array_element(
             value_free(&index);
             fprintf(
                 stderr,
-                "Surge runtime error: array index out of bounds.\n"
+                "Syger runtime error: array index out of bounds.\n"
             );
             exit(1);
         }
@@ -325,9 +325,709 @@ static Value *resolve_array_element(
 
     fprintf(
         stderr,
-        "Surge runtime error: array assignment requires an array expression.\n"
+        "Syger runtime error: array assignment requires an array expression.\n"
     );
     exit(1);
+}
+
+static int value_equals(const Value *left, const Value *right)
+{
+    if (left->type != right->type)
+    {
+        return 0;
+    }
+
+    switch (left->type)
+    {
+        case VALUE_STRING:
+            return strcmp(left->string, right->string) == 0;
+
+        case VALUE_INT:
+            return left->integer == right->integer;
+
+        case VALUE_BOOL:
+            return left->boolean == right->boolean;
+
+        case VALUE_ARRAY:
+            if (left->array.count != right->array.count)
+            {
+                return 0;
+            }
+
+            for (int i = 0; i < left->array.count; i++)
+            {
+                if (!value_equals(
+                    &left->array.elements[i],
+                    &right->array.elements[i]
+                ))
+                {
+                    return 0;
+                }
+            }
+
+            return 1;
+    }
+
+    return 0;
+}
+
+static Value *require_array_argument(
+    AstNode *node,
+    Environment *environment,
+    const char *name
+)
+{
+    if (node->type != AST_VARIABLE_REFERENCE &&
+        node->type != AST_INDEX)
+    {
+        fprintf(
+            stderr,
+            "Syger runtime error: %s requires an array variable or indexed array.\n",
+            name
+        );
+        exit(1);
+    }
+
+    Value *value = resolve_array_element(node, environment);
+
+    if (value->type != VALUE_ARRAY)
+    {
+        fprintf(
+            stderr,
+            "Syger runtime error: %s requires an array.\n",
+            name
+        );
+        exit(1);
+    }
+
+    return value;
+}
+
+static long require_integer_value(
+    Value *value,
+    const char *name
+)
+{
+    if (value->type != VALUE_INT)
+    {
+        fprintf(
+            stderr,
+            "Syger runtime error: %s requires an integer index.\n",
+            name
+        );
+        value_free(value);
+        exit(1);
+    }
+
+    return value->integer;
+}
+
+static void check_array_index(
+    const Value *array,
+    long index,
+    const char *name,
+    int allow_end
+)
+{
+    long upper = allow_end ? array->array.count : array->array.count - 1;
+
+    if (index < 0 || index > upper)
+    {
+        fprintf(
+            stderr,
+            "Syger runtime error: %s index out of bounds.\n",
+            name
+        );
+        exit(1);
+    }
+}
+
+static Value evaluate_array_builtin(
+    AstNode *node,
+    Environment *environment
+)
+{
+    const char *name = node->call.name;
+
+    if (strcmp(name, "length") == 0)
+    {
+        if (node->call.argument_count != 1)
+        {
+            fprintf(stderr, "Syger runtime error: length expects 1 argument.\n");
+            exit(1);
+        }
+
+        Value value = evaluate(node->call.arguments[0], environment);
+
+        if (value.type == VALUE_ARRAY)
+        {
+            int count = value.array.count;
+            value_free(&value);
+            return value_int(count);
+        }
+
+        if (value.type == VALUE_STRING)
+        {
+            size_t count = strlen(value.string);
+            value_free(&value);
+            return value_int((long)count);
+        }
+
+        value_free(&value);
+        fprintf(stderr, "Syger runtime error: length requires an array or string.\n");
+        exit(1);
+    }
+
+    if (strcmp(name, "append") == 0)
+    {
+        if (node->call.argument_count != 2)
+        {
+            fprintf(stderr, "Syger runtime error: append expects 2 arguments.\n");
+            exit(1);
+        }
+
+        Value *array = require_array_argument(
+            node->call.arguments[0],
+            environment,
+            "append"
+        );
+
+        Value value = evaluate(node->call.arguments[1], environment);
+
+        Value *elements = realloc(
+            array->array.elements,
+            sizeof(Value) * (size_t)(array->array.count + 1)
+        );
+
+        if (elements == NULL)
+        {
+            value_free(&value);
+            fprintf(stderr, "Syger: out of memory.\n");
+            exit(1);
+        }
+
+        array->array.elements = elements;
+        array->array.elements[array->array.count] = value;
+        array->array.count++;
+
+        return value_int(0);
+    }
+
+    if (strcmp(name, "pop") == 0)
+    {
+        if (node->call.argument_count != 1)
+        {
+            fprintf(stderr, "Syger runtime error: pop expects 1 argument.\n");
+            exit(1);
+        }
+
+        Value *array = require_array_argument(
+            node->call.arguments[0],
+            environment,
+            "pop"
+        );
+
+        if (array->array.count == 0)
+        {
+            fprintf(stderr, "Syger runtime error: pop cannot remove from an empty array.\n");
+            exit(1);
+        }
+
+        int index = array->array.count - 1;
+        Value result = array->array.elements[index];
+        array->array.count--;
+
+        if (array->array.count == 0)
+        {
+            free(array->array.elements);
+            array->array.elements = NULL;
+        }
+        else
+        {
+            Value *elements = realloc(
+                array->array.elements,
+                sizeof(Value) * (size_t)array->array.count
+            );
+
+            if (elements != NULL)
+            {
+                array->array.elements = elements;
+            }
+        }
+
+        return result;
+    }
+
+    if (strcmp(name, "insert") == 0)
+    {
+        if (node->call.argument_count != 3)
+        {
+            fprintf(stderr, "Syger runtime error: insert expects 3 arguments.\n");
+            exit(1);
+        }
+
+        Value *array = require_array_argument(
+            node->call.arguments[0],
+            environment,
+            "insert"
+        );
+
+        Value index_value = evaluate(node->call.arguments[1], environment);
+        long index = require_integer_value(&index_value, "insert");
+        check_array_index(array, index, "insert", 1);
+
+        Value value = evaluate(node->call.arguments[2], environment);
+
+        Value *elements = realloc(
+            array->array.elements,
+            sizeof(Value) * (size_t)(array->array.count + 1)
+        );
+
+        if (elements == NULL)
+        {
+            value_free(&value);
+            fprintf(stderr, "Syger: out of memory.\n");
+            exit(1);
+        }
+
+        array->array.elements = elements;
+
+        for (int i = array->array.count; i > index; i--)
+        {
+            array->array.elements[i] = array->array.elements[i - 1];
+        }
+
+        array->array.elements[index] = value;
+        array->array.count++;
+
+        return value_int(0);
+    }
+
+    if (strcmp(name, "remove") == 0)
+    {
+        if (node->call.argument_count != 2)
+        {
+            fprintf(stderr, "Syger runtime error: remove expects 2 arguments.\n");
+            exit(1);
+        }
+
+        Value *array = require_array_argument(
+            node->call.arguments[0],
+            environment,
+            "remove"
+        );
+
+        Value index_value = evaluate(node->call.arguments[1], environment);
+        long index = require_integer_value(&index_value, "remove");
+        check_array_index(array, index, "remove", 0);
+
+        Value result = array->array.elements[index];
+
+        for (int i = (int)index; i < array->array.count - 1; i++)
+        {
+            array->array.elements[i] = array->array.elements[i + 1];
+        }
+
+        array->array.count--;
+
+        if (array->array.count == 0)
+        {
+            free(array->array.elements);
+            array->array.elements = NULL;
+        }
+        else
+        {
+            Value *elements = realloc(
+                array->array.elements,
+                sizeof(Value) * (size_t)array->array.count
+            );
+
+            if (elements != NULL)
+            {
+                array->array.elements = elements;
+            }
+        }
+
+        return result;
+    }
+
+    if (strcmp(name, "contains") == 0)
+    {
+        if (node->call.argument_count != 2)
+        {
+            fprintf(stderr, "Syger runtime error: contains expects 2 arguments.\n");
+            exit(1);
+        }
+
+        Value array = evaluate(node->call.arguments[0], environment);
+        Value value = evaluate(node->call.arguments[1], environment);
+
+        if (array.type != VALUE_ARRAY)
+        {
+            value_free(&array);
+            value_free(&value);
+            fprintf(stderr, "Syger runtime error: contains requires an array.\n");
+            exit(1);
+        }
+
+        int found = 0;
+
+        for (int i = 0; i < array.array.count; i++)
+        {
+            if (value_equals(&array.array.elements[i], &value))
+            {
+                found = 1;
+                break;
+            }
+        }
+
+        value_free(&array);
+        value_free(&value);
+        return value_bool(found);
+    }
+
+    if (strcmp(name, "index_of") == 0)
+    {
+        if (node->call.argument_count != 2)
+        {
+            fprintf(stderr, "Syger runtime error: index_of expects 2 arguments.\n");
+            exit(1);
+        }
+
+        Value array = evaluate(node->call.arguments[0], environment);
+        Value value = evaluate(node->call.arguments[1], environment);
+
+        if (array.type != VALUE_ARRAY)
+        {
+            value_free(&array);
+            value_free(&value);
+            fprintf(stderr, "Syger runtime error: index_of requires an array.\n");
+            exit(1);
+        }
+
+        long index = -1;
+
+        for (int i = 0; i < array.array.count; i++)
+        {
+            if (value_equals(&array.array.elements[i], &value))
+            {
+                index = i;
+                break;
+            }
+        }
+
+        value_free(&array);
+        value_free(&value);
+        return value_int(index);
+    }
+
+    if (strcmp(name, "clear") == 0)
+    {
+        if (node->call.argument_count != 1)
+        {
+            fprintf(stderr, "Syger runtime error: clear expects 1 argument.\n");
+            exit(1);
+        }
+
+        Value *array = require_array_argument(
+            node->call.arguments[0],
+            environment,
+            "clear"
+        );
+
+        for (int i = 0; i < array->array.count; i++)
+        {
+            value_free(&array->array.elements[i]);
+        }
+
+        free(array->array.elements);
+        array->array.elements = NULL;
+        array->array.count = 0;
+
+        return value_int(0);
+    }
+
+    if (strcmp(name, "reverse") == 0)
+    {
+        if (node->call.argument_count != 1)
+        {
+            fprintf(stderr, "Syger runtime error: reverse expects 1 argument.\n");
+            exit(1);
+        }
+
+        Value *array = require_array_argument(
+            node->call.arguments[0],
+            environment,
+            "reverse"
+        );
+
+        for (int left = 0, right = array->array.count - 1;
+             left < right;
+             left++, right--)
+        {
+            Value temporary = array->array.elements[left];
+            array->array.elements[left] = array->array.elements[right];
+            array->array.elements[right] = temporary;
+        }
+
+        return value_int(0);
+    }
+
+    if (strcmp(name, "slice") == 0)
+    {
+        if (node->call.argument_count != 3)
+        {
+            fprintf(stderr, "Syger runtime error: slice expects 3 arguments.\n");
+            exit(1);
+        }
+
+        Value array = evaluate(node->call.arguments[0], environment);
+        Value start_value = evaluate(node->call.arguments[1], environment);
+        Value end_value = evaluate(node->call.arguments[2], environment);
+
+        if (array.type != VALUE_ARRAY)
+        {
+            value_free(&array);
+            value_free(&start_value);
+            value_free(&end_value);
+            fprintf(stderr, "Syger runtime error: slice requires an array.\n");
+            exit(1);
+        }
+
+        long start = require_integer_value(&start_value, "slice");
+        long end = require_integer_value(&end_value, "slice");
+
+        if (start < 0 || end < start || end > array.array.count)
+        {
+            value_free(&array);
+            fprintf(stderr, "Syger runtime error: slice indices out of bounds.\n");
+            exit(1);
+        }
+
+        Value result = value_array((int)(end - start));
+
+        for (long i = start; i < end; i++)
+        {
+            result.array.elements[i - start] =
+                value_copy(&array.array.elements[i]);
+        }
+
+        value_free(&array);
+        return result;
+    }
+
+    if (strcmp(name, "join") == 0)
+    {
+        if (node->call.argument_count != 2)
+        {
+            fprintf(stderr, "Syger runtime error: join expects 2 arguments.\n");
+            exit(1);
+        }
+
+        Value array = evaluate(node->call.arguments[0], environment);
+        Value separator = evaluate(node->call.arguments[1], environment);
+
+        if (array.type != VALUE_ARRAY || separator.type != VALUE_STRING)
+        {
+            value_free(&array);
+            value_free(&separator);
+            fprintf(stderr, "Syger runtime error: join requires an array and a string separator.\n");
+            exit(1);
+        }
+
+        size_t total = 1;
+        size_t separator_length = strlen(separator.string);
+
+        for (int i = 0; i < array.array.count; i++)
+        {
+            if (array.array.elements[i].type != VALUE_STRING)
+            {
+                value_free(&array);
+                value_free(&separator);
+                fprintf(stderr, "Syger runtime error: join requires an array of strings.\n");
+                exit(1);
+            }
+
+            total += strlen(array.array.elements[i].string);
+
+            if (i > 0)
+            {
+                total += separator_length;
+            }
+        }
+
+        char *result = malloc(total);
+
+        if (result == NULL)
+        {
+            value_free(&array);
+            value_free(&separator);
+            fprintf(stderr, "Syger: out of memory.\n");
+            exit(1);
+        }
+
+        result[0] = '\0';
+
+        for (int i = 0; i < array.array.count; i++)
+        {
+            if (i > 0)
+            {
+                strcat(result, separator.string);
+            }
+
+            strcat(result, array.array.elements[i].string);
+        }
+
+        Value value = value_string(result);
+        free(result);
+        value_free(&array);
+        value_free(&separator);
+        return value;
+    }
+
+    if (strcmp(name, "sum") == 0 ||
+        strcmp(name, "min") == 0 ||
+        strcmp(name, "max") == 0)
+    {
+        if (node->call.argument_count != 1)
+        {
+            fprintf(stderr, "Syger runtime error: array reduction expects 1 argument.\n");
+            exit(1);
+        }
+
+        Value array = evaluate(node->call.arguments[0], environment);
+
+        if (array.type != VALUE_ARRAY)
+        {
+            value_free(&array);
+            fprintf(stderr, "Syger runtime error: array reduction requires an array.\n");
+            exit(1);
+        }
+
+        if (array.array.count == 0)
+        {
+            value_free(&array);
+            fprintf(stderr, "Syger runtime error: array reduction requires a non-empty array.\n");
+            exit(1);
+        }
+
+        for (int i = 0; i < array.array.count; i++)
+        {
+            if (array.array.elements[i].type != VALUE_INT)
+            {
+                value_free(&array);
+                fprintf(stderr, "Syger runtime error: array reduction requires an array of integers.\n");
+                exit(1);
+            }
+        }
+
+        long result = array.array.elements[0].integer;
+
+        if (strcmp(name, "sum") == 0)
+        {
+            result = 0;
+
+            for (int i = 0; i < array.array.count; i++)
+            {
+                result += array.array.elements[i].integer;
+            }
+        }
+        else
+        {
+            for (int i = 1; i < array.array.count; i++)
+            {
+                if (strcmp(name, "min") == 0 &&
+                    array.array.elements[i].integer < result)
+                {
+                    result = array.array.elements[i].integer;
+                }
+
+                if (strcmp(name, "max") == 0 &&
+                    array.array.elements[i].integer > result)
+                {
+                    result = array.array.elements[i].integer;
+                }
+            }
+        }
+
+        value_free(&array);
+        return value_int(result);
+    }
+
+    if (strcmp(name, "first") == 0 || strcmp(name, "last") == 0)
+    {
+        if (node->call.argument_count != 1)
+        {
+            fprintf(stderr, "Syger runtime error: first/last expects 1 argument.\n");
+            exit(1);
+        }
+
+        Value array = evaluate(node->call.arguments[0], environment);
+
+        if (array.type != VALUE_ARRAY)
+        {
+            value_free(&array);
+            fprintf(stderr, "Syger runtime error: first/last requires an array.\n");
+            exit(1);
+        }
+
+        if (array.array.count == 0)
+        {
+            value_free(&array);
+            fprintf(stderr, "Syger runtime error: first/last cannot be used on an empty array.\n");
+            exit(1);
+        }
+
+        int index = strcmp(name, "first") == 0 ? 0 : array.array.count - 1;
+        Value result = value_copy(&array.array.elements[index]);
+        value_free(&array);
+        return result;
+    }
+
+    if (strcmp(name, "sort") == 0)
+    {
+        if (node->call.argument_count != 1)
+        {
+            fprintf(stderr, "Syger runtime error: sort expects 1 argument.\n");
+            exit(1);
+        }
+
+        Value *array = require_array_argument(
+            node->call.arguments[0],
+            environment,
+            "sort"
+        );
+
+        for (int i = 0; i < array->array.count; i++)
+        {
+            if (array->array.elements[i].type != VALUE_INT)
+            {
+                fprintf(
+                    stderr,
+                    "Syger runtime error: sort currently requires an array of integers.\n"
+                );
+                exit(1);
+            }
+        }
+
+        for (int i = 0; i < array->array.count; i++)
+        {
+            for (int j = i + 1; j < array->array.count; j++)
+            {
+                if (array->array.elements[j].integer <
+                    array->array.elements[i].integer)
+                {
+                    Value temporary = array->array.elements[i];
+                    array->array.elements[i] = array->array.elements[j];
+                    array->array.elements[j] = temporary;
+                }
+            }
+        }
+
+        return value_int(0);
+    }
+
+    return value_int(0);
 }
 
 static Value evaluate_index(
@@ -343,7 +1043,7 @@ static Value evaluate_index(
     {
         value_free(&array);
         value_free(&index);
-        fprintf(stderr, "Surge runtime error: indexing requires an array.\n");
+        fprintf(stderr, "Syger runtime error: indexing requires an array.\n");
         exit(1);
     }
 
@@ -351,7 +1051,7 @@ static Value evaluate_index(
     {
         value_free(&array);
         value_free(&index);
-        fprintf(stderr, "Surge runtime error: array index must be an integer.\n");
+        fprintf(stderr, "Syger runtime error: array index must be an integer.\n");
         exit(1);
     }
 
@@ -359,7 +1059,7 @@ static Value evaluate_index(
     {
         value_free(&array);
         value_free(&index);
-        fprintf(stderr, "Surge runtime error: array index out of bounds.\n");
+        fprintf(stderr, "Syger runtime error: array index out of bounds.\n");
         exit(1);
     }
 
@@ -427,7 +1127,7 @@ static Value evaluate(
                 {
                     fprintf(
                         stderr,
-                        "Surge runtime error: 'not' requires a boolean value.\n"
+                        "Syger runtime error: 'not' requires a boolean value.\n"
                     );
                     exit(1);
                 }
@@ -439,7 +1139,7 @@ static Value evaluate(
                 {
                     fprintf(
                         stderr,
-                        "Surge runtime error: unary '-' requires an integer value.\n"
+                        "Syger runtime error: unary '-' requires an integer value.\n"
                     );
                     exit(1);
                 }
@@ -449,7 +1149,7 @@ static Value evaluate(
             default:
                 fprintf(
                     stderr,
-                    "Surge runtime error: unknown unary operator.\n"
+                    "Syger runtime error: unknown unary operator.\n"
                 );
                 exit(1);
         }
@@ -466,7 +1166,7 @@ static Value evaluate(
         {
             fprintf(
                 stderr,
-                "Surge runtime error: variable '%s' is not defined.\n",
+                "Syger runtime error: variable '%s' is not defined.\n",
                 node->variable_reference.name
             );
             exit(1);
@@ -477,6 +1177,27 @@ static Value evaluate(
 
     if (node->type == AST_CALL)
     {
+        if (strcmp(node->call.name, "length") == 0 ||
+            strcmp(node->call.name, "append") == 0 ||
+            strcmp(node->call.name, "pop") == 0 ||
+            strcmp(node->call.name, "insert") == 0 ||
+            strcmp(node->call.name, "remove") == 0 ||
+            strcmp(node->call.name, "contains") == 0 ||
+            strcmp(node->call.name, "index_of") == 0 ||
+            strcmp(node->call.name, "clear") == 0 ||
+            strcmp(node->call.name, "reverse") == 0 ||
+            strcmp(node->call.name, "sort") == 0 ||
+            strcmp(node->call.name, "slice") == 0 ||
+            strcmp(node->call.name, "join") == 0 ||
+            strcmp(node->call.name, "sum") == 0 ||
+            strcmp(node->call.name, "min") == 0 ||
+            strcmp(node->call.name, "max") == 0 ||
+            strcmp(node->call.name, "first") == 0 ||
+            strcmp(node->call.name, "last") == 0)
+        {
+            return evaluate_array_builtin(node, environment);
+        }
+
         if (strcmp(node->call.name, "print") == 0)
         {
             for (int i = 0; i < node->call.argument_count; i++)
@@ -503,7 +1224,7 @@ static Value evaluate(
         {
             fprintf(
                 stderr,
-                "Surge runtime error: function '%s' is not defined.\n",
+                "Syger runtime error: function '%s' is not defined.\n",
                 node->call.name
             );
             exit(1);
@@ -513,7 +1234,7 @@ static Value evaluate(
         {
             fprintf(
                 stderr,
-                "Surge runtime error: function '%s' expects %d argument(s), got %d.\n",
+                "Syger runtime error: function '%s' expects %d argument(s), got %d.\n",
                 node->call.name,
                 function->parameter_count,
                 node->call.argument_count
@@ -549,7 +1270,7 @@ static Value evaluate(
         {
             fprintf(
                 stderr,
-                "Surge runtime error: loop control statement outside of a loop.\n"
+                "Syger runtime error: loop control statement outside of a loop.\n"
             );
             exit(1);
         }
@@ -570,7 +1291,7 @@ static Value evaluate(
             {
                 fprintf(
                     stderr,
-                    "Surge runtime error: 'and' requires boolean values.\n"
+                    "Syger runtime error: 'and' requires boolean values.\n"
                 );
                 exit(1);
             }
@@ -589,7 +1310,7 @@ static Value evaluate(
             {
                 fprintf(
                     stderr,
-                    "Surge runtime error: 'and' requires boolean values.\n"
+                    "Syger runtime error: 'and' requires boolean values.\n"
                 );
                 exit(1);
             }
@@ -608,7 +1329,7 @@ static Value evaluate(
             {
                 fprintf(
                     stderr,
-                    "Surge runtime error: 'or' requires boolean values.\n"
+                    "Syger runtime error: 'or' requires boolean values.\n"
                 );
                 exit(1);
             }
@@ -627,7 +1348,7 @@ static Value evaluate(
             {
                 fprintf(
                     stderr,
-                    "Surge runtime error: 'or' requires boolean values.\n"
+                    "Syger runtime error: 'or' requires boolean values.\n"
                 );
                 exit(1);
             }
@@ -661,7 +1382,7 @@ static Value evaluate(
 
                     if (result == NULL)
                     {
-                        fprintf(stderr, "Surge: out of memory.\n");
+                        fprintf(stderr, "Syger: out of memory.\n");
                         exit(1);
                     }
 
@@ -700,7 +1421,7 @@ static Value evaluate(
                     value_free(&right);
                     fprintf(
                         stderr,
-                        "Surge runtime error: unsupported string operator.\n"
+                        "Syger runtime error: unsupported string operator.\n"
                     );
                     exit(1);
             }
@@ -712,7 +1433,7 @@ static Value evaluate(
             value_free(&right);
             fprintf(
                 stderr,
-                "Surge runtime error: arithmetic and numeric comparisons require integer values.\n"
+                "Syger runtime error: arithmetic and numeric comparisons require integer values.\n"
             );
             exit(1);
         }
@@ -733,7 +1454,7 @@ static Value evaluate(
                 {
                     fprintf(
                         stderr,
-                        "Surge runtime error: division by zero.\n"
+                        "Syger runtime error: division by zero.\n"
                     );
                     exit(1);
                 }
@@ -745,7 +1466,7 @@ static Value evaluate(
                 {
                     fprintf(
                         stderr,
-                        "Surge runtime error: modulo by zero.\n"
+                        "Syger runtime error: modulo by zero.\n"
                     );
                     exit(1);
                 }
@@ -773,7 +1494,7 @@ static Value evaluate(
             default:
                 fprintf(
                     stderr,
-                    "Surge runtime error: unknown binary operator.\n"
+                    "Syger runtime error: unknown binary operator.\n"
                 );
                 exit(1);
         }
@@ -781,7 +1502,7 @@ static Value evaluate(
 
     fprintf(
         stderr,
-        "Surge runtime error: invalid expression.\n"
+        "Syger runtime error: invalid expression.\n"
     );
     exit(1);
 }
@@ -875,7 +1596,7 @@ static ExecutionResult execute(
             {
                 value_free(&index);
                 value_free(&value);
-                fprintf(stderr, "Surge runtime error: indexing requires an array.\n");
+                fprintf(stderr, "Syger runtime error: indexing requires an array.\n");
                 exit(1);
             }
 
@@ -883,7 +1604,7 @@ static ExecutionResult execute(
             {
                 value_free(&index);
                 value_free(&value);
-                fprintf(stderr, "Surge runtime error: array index must be an integer.\n");
+                fprintf(stderr, "Syger runtime error: array index must be an integer.\n");
                 exit(1);
             }
 
@@ -891,7 +1612,7 @@ static ExecutionResult execute(
             {
                 value_free(&index);
                 value_free(&value);
-                fprintf(stderr, "Surge runtime error: array index out of bounds.\n");
+                fprintf(stderr, "Syger runtime error: array index out of bounds.\n");
                 exit(1);
             }
 
@@ -934,7 +1655,7 @@ static ExecutionResult execute(
             {
                 fprintf(
                     stderr,
-                    "Surge runtime error: if condition must be a boolean.\n"
+                    "Syger runtime error: if condition must be a boolean.\n"
                 );
                 exit(1);
             }
@@ -982,7 +1703,7 @@ static ExecutionResult execute(
                 {
                     fprintf(
                         stderr,
-                        "Surge runtime error: while condition must be a boolean.\n"
+                        "Syger runtime error: while condition must be a boolean.\n"
                     );
                     exit(1);
                 }
@@ -1045,7 +1766,7 @@ void interpreter_run(AstNode *program)
     {
         fprintf(
             stderr,
-            "Surge runtime error: loop control statement outside of a loop.\n"
+            "Syger runtime error: loop control statement outside of a loop.\n"
         );
         exit(1);
     }

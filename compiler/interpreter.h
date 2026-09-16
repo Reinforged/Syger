@@ -1,5 +1,5 @@
-#ifndef SURGE_INTERPRETER_H
-#define SURGE_INTERPRETER_H
+#ifndef SYGER_INTERPRETER_H
+#define SYGER_INTERPRETER_H
 
 #include "ast.h"
 

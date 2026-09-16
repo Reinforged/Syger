@@ -72,7 +72,7 @@ AstNode *ast_create_integer(long value)
 
     if (node == NULL)
     {
-        fprintf(stderr, "Surge: out of memory.\n");
+        fprintf(stderr, "Syger: out of memory.\n");
         exit(1);
     }
 
@@ -88,7 +88,7 @@ AstNode *ast_create_boolean(int boolean)
 
     if (node == NULL)
     {
-        fprintf(stderr, "Surge: out of memory.\n");
+        fprintf(stderr, "Syger: out of memory.\n");
         exit(1);
     }
 
@@ -172,7 +172,7 @@ AstNode *ast_create_binary(
 
     if (node == NULL)
     {
-        fprintf(stderr, "Surge: out of memory.\n");
+        fprintf(stderr, "Syger: out of memory.\n");
         exit(1);
     }
 
@@ -193,7 +193,7 @@ AstNode *ast_create_unary(
 
     if (node == NULL)
     {
-        fprintf(stderr, "Surge: out of memory.\n");
+        fprintf(stderr, "Syger: out of memory.\n");
         exit(1);
     }
 
@@ -214,7 +214,7 @@ AstNode *ast_create_if(
 
     if (node == NULL)
     {
-        fprintf(stderr, "Surge: out of memory.\n");
+        fprintf(stderr, "Syger: out of memory.\n");
         exit(1);
     }
 
@@ -235,7 +235,7 @@ AstNode *ast_create_while(
 
     if (node == NULL)
     {
-        fprintf(stderr, "Surge: out of memory.\n");
+        fprintf(stderr, "Syger: out of memory.\n");
         exit(1);
     }
 
@@ -292,7 +292,7 @@ AstNode *ast_create_array(AstNode **elements, int count)
 
     if (node == NULL)
     {
-        fprintf(stderr, "Surge: out of memory.\n");
+        fprintf(stderr, "Syger: out of memory.\n");
         exit(1);
     }
 
@@ -309,7 +309,7 @@ AstNode *ast_create_index(AstNode *array, AstNode *index)
 
     if (node == NULL)
     {
-        fprintf(stderr, "Surge: out of memory.\n");
+        fprintf(stderr, "Syger: out of memory.\n");
         exit(1);
     }
 
@@ -330,7 +330,7 @@ AstNode *ast_create_index_assignment(
 
     if (node == NULL)
     {
-        fprintf(stderr, "Surge: out of memory.\n");
+        fprintf(stderr, "Syger: out of memory.\n");
         exit(1);
     }
 
@@ -354,7 +354,7 @@ AstNode *ast_create_break(void)
 
     if (node == NULL)
     {
-        fprintf(stderr, "Surge: out of memory.\n");
+        fprintf(stderr, "Syger: out of memory.\n");
         exit(1);
     }
 
@@ -369,7 +369,7 @@ AstNode *ast_create_continue(void)
 
     if (node == NULL)
     {
-        fprintf(stderr, "Surge: out of memory.\n");
+        fprintf(stderr, "Syger: out of memory.\n");
         exit(1);
     }
 

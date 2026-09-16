@@ -12,7 +12,7 @@ static char *copy_string(const char *string)
 
     if (copy == NULL)
     {
-        fprintf(stderr, "Surge: out of memory.\n");
+        fprintf(stderr, "Syger: out of memory.\n");
         exit(1);
     }
 
@@ -65,7 +65,7 @@ Value value_array(int count)
 
         if (value.array.elements == NULL)
         {
-            fprintf(stderr, "Surge: out of memory.\n");
+            fprintf(stderr, "Syger: out of memory.\n");
             exit(1);
         }
     }

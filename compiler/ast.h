@@ -1,5 +1,5 @@
-#ifndef SURGE_AST_H
-#define SURGE_AST_H
+#ifndef SYGER_AST_H
+#define SYGER_AST_H
 
 #include "lexer.h"
 

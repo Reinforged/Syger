@@ -1,5 +1,5 @@
-#ifndef SURGE_LEXER_H
-#define SURGE_LEXER_H
+#ifndef SYGER_LEXER_H
+#define SYGER_LEXER_H
 
 typedef enum {
     TOKEN_EOF,

@@ -14,7 +14,7 @@ static void parser_error(Parser *parser, const char *message)
 {
     fprintf(
         stderr,
-        "Surge parser error on line %d: %s\n",
+        "Syger parser error on line %d: %s\n",
         parser->current.line,
         message
     );
@@ -43,7 +43,7 @@ static char *token_to_string(Token token)
 
     if (text == NULL)
     {
-        fprintf(stderr, "Surge: out of memory.\n");
+        fprintf(stderr, "Syger: out of memory.\n");
         exit(1);
     }
 
@@ -66,7 +66,7 @@ static AstNode *parse_string(Parser *parser)
 
     if (value == NULL)
     {
-        fprintf(stderr, "Surge: out of memory.\n");
+        fprintf(stderr, "Syger: out of memory.\n");
         exit(1);
     }
 
@@ -118,7 +118,7 @@ static AstNode *parse_array(Parser *parser)
 
             if (new_elements == NULL)
             {
-                fprintf(stderr, "Surge: out of memory.\n");
+                fprintf(stderr, "Syger: out of memory.\n");
                 exit(1);
             }
 

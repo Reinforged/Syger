@@ -1,5 +1,5 @@
-#ifndef SURGE_VALUE_H
-#define SURGE_VALUE_H
+#ifndef SYGER_VALUE_H
+#define SYGER_VALUE_H
 
 typedef enum {
     VALUE_STRING,
