@@ -1,0 +1,6 @@
+1
+S
+yg
+none
+true
+self-hosting

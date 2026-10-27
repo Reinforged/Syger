@@ -1,0 +1,31 @@
+# This fixture exercises the important paths through the Syger-to-C compiler.
+fun factorial(n)
+    if n <= 1
+        return 1
+    return n * factorial(n - 1)
+
+values = [10, 20]
+append(values, 30)
+values[1] = 99
+
+index = 0
+while index < 3
+    append(values, index)
+    index = index + 1
+
+if factorial(5) == 120
+    print("recursion passed")
+elif factorial(5) == 24
+    print("wrong factorial")
+else
+    print("recursion failed")
+
+print(values)
+print("# comments are ignored")
+
+# A short-circuit test: the right side should not be evaluated.
+fun should_not_run()
+    print("unexpected side effect")
+    return true
+
+print(false and should_not_run())

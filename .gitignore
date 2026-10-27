@@ -1,0 +1,6 @@
+# Local compiler executable and generated native builds
+/Syger
+/build/
+*.o
+*.dSYM/
+.DS_Store

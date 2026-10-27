@@ -4,5 +4,6 @@
 #include "ast.h"
 
 void interpreter_run(AstNode *program);
+void interpreter_set_arguments(int count, char **arguments);
 
 #endif

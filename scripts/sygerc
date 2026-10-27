@@ -1,0 +1,42 @@
+#!/bin/bash
+set -euo pipefail
+
+usage() {
+    echo "Usage: sygerc <input.sg> -o <output-executable>" >&2
+    echo "Set SYGER_BOOTSTRAP to the stage0 interpreter when it is not named Syger." >&2
+    exit 2
+}
+
+[[ $# -eq 3 && "$2" == "-o" ]] || usage
+SOURCE="$1"
+OUTPUT="$3"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+if [[ -n "${SYGER_BOOTSTRAP:-}" && -x "${SYGER_BOOTSTRAP}" ]]; then
+    BOOTSTRAP="$SYGER_BOOTSTRAP"
+elif [[ -x "$ROOT/Syger" ]]; then
+    BOOTSTRAP="$ROOT/Syger"
+elif command -v Syger >/dev/null 2>&1; then
+    BOOTSTRAP="$(command -v Syger)"
+else
+    echo "Could not find the Syger bootstrap interpreter. Build it with:" >&2
+    echo "  clang -Wall -Wextra -std=c17 compiler/*.c -o Syger" >&2
+    exit 1
+fi
+
+CC="${CC:-clang}"
+TEMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/sygerc.XXXXXX")"
+cleanup() {
+    if [[ "${SYGER_KEEP_C:-0}" == "1" ]]; then
+        echo "Generated C retained at: $TEMP_DIR/program.c" >&2
+    else
+        rm -rf "$TEMP_DIR"
+    fi
+}
+trap cleanup EXIT
+C_SOURCE="$TEMP_DIR/program.c"
+
+"$BOOTSTRAP" "$ROOT/selfhost/compiler.sg" "$SOURCE" "$C_SOURCE"
+mkdir -p "$(dirname "$OUTPUT")"
+"$CC" -Wall -Wextra -std=c17 -I "$ROOT/selfhost" "$C_SOURCE" "$ROOT/selfhost/native_runtime.c" -o "$OUTPUT"
+echo "Compiled $SOURCE -> $OUTPUT"

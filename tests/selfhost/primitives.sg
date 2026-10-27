@@ -1,0 +1,8 @@
+# Host functions required by the self-hosting compiler.
+arguments = args()
+print(length(arguments))
+print(char_at("Syger", 0))
+print(substring("Syger", 1, 3))
+print(type_of(none))
+print(write_file(arguments[0], "self-hosting"))
+print(read_file(arguments[0]))

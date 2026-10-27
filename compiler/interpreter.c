@@ -1,9 +1,11 @@
 #include "interpreter.h"
 #include "value.h"
+#include "diagnostics.h"
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <errno.h>
 
 typedef struct {
     char *name;
@@ -32,7 +34,17 @@ struct Environment {
     Environment *parent;
     Function *functions;
     int function_count;
+    int function_scope;
 };
+
+static int runtime_argument_count = 0;
+static char **runtime_arguments = NULL;
+
+void interpreter_set_arguments(int count, char **arguments)
+{
+    runtime_argument_count = count;
+    runtime_arguments = arguments;
+}
 
 static Environment *environment_create(Environment *parent)
 {
@@ -40,8 +52,7 @@ static Environment *environment_create(Environment *parent)
 
     if (environment == NULL)
     {
-        fprintf(stderr, "Syger: out of memory.\n");
-        exit(1);
+        diagnostics_fatal("E0003", "Out of memory.", "Close other applications or reduce the size of the input.");
     }
     
     environment->functions = NULL;
@@ -49,7 +60,15 @@ static Environment *environment_create(Environment *parent)
     environment->variables = NULL;
     environment->count = 0;
     environment->parent = parent;
+    environment->function_scope = 0;
 
+    return environment;
+}
+
+static Environment *environment_create_function(Environment *parent)
+{
+    Environment *environment = environment_create(parent);
+    environment->function_scope = 1;
     return environment;
 }
 
@@ -98,7 +117,25 @@ static void set_variable(
     Value value
 )
 {
-    Variable *variable = find_variable(environment, name);
+    Variable *variable = NULL;
+    for (Environment *current = environment;
+         current != NULL;
+         current = current->parent)
+    {
+        for (int i = 0; i < current->count; i++)
+        {
+            if (strcmp(current->variables[i].name, name) == 0)
+            {
+                variable = &current->variables[i];
+                break;
+            }
+        }
+
+        if (variable != NULL || current->function_scope)
+        {
+            break;
+        }
+    }
 
     if (variable != NULL)
     {
@@ -114,8 +151,7 @@ static void set_variable(
 
     if (variables == NULL)
     {
-        fprintf(stderr, "Syger: out of memory.\n");
-        exit(1);
+        diagnostics_fatal("E0003", "Out of memory.", "Close other applications or reduce the size of the input.");
     }
 
     environment->variables = variables;
@@ -127,8 +163,7 @@ static void set_variable(
 
     if (new_variable->name == NULL)
     {
-        fprintf(stderr, "Syger: out of memory.\n");
-        exit(1);
+        diagnostics_fatal("E0003", "Out of memory.", "Close other applications or reduce the size of the input.");
     }
 
     strcpy(new_variable->name, name);
@@ -187,8 +222,7 @@ static void define_function(
 
     if (functions == NULL)
     {
-        fprintf(stderr, "Syger: out of memory.\n");
-        exit(1);
+        diagnostics_fatal("E0003", "Out of memory.", "Close other applications or reduce the size of the input.");
     }
 
     environment->functions = functions;
@@ -200,8 +234,7 @@ static void define_function(
 
     if (new_function->name == NULL)
     {
-        fprintf(stderr, "Syger: out of memory.\n");
-        exit(1);
+        diagnostics_fatal("E0003", "Out of memory.", "Close other applications or reduce the size of the input.");
     }
 
     strcpy(new_function->name, name);
@@ -218,8 +251,7 @@ static void define_function(
 
         if (new_function->parameters == NULL)
         {
-            fprintf(stderr, "Syger: out of memory.\n");
-            exit(1);
+            diagnostics_fatal("E0003", "Out of memory.", "Close other applications or reduce the size of the input.");
         }
     }
     
@@ -230,8 +262,7 @@ static void define_function(
 
         if (new_function->parameters[i] == NULL)
         {
-            fprintf(stderr, "Syger: out of memory.\n");
-            exit(1);
+            diagnostics_fatal("E0003", "Out of memory.", "Close other applications or reduce the size of the input.");
         }
 
         strcpy(
@@ -268,12 +299,7 @@ static Value *resolve_array_element(
 
         if (variable == NULL)
         {
-            fprintf(
-                stderr,
-                "Syger runtime error: variable '%s' is not defined.\n",
-                node->variable_reference.name
-            );
-            exit(1);
+            diagnostics_runtime_errorf("E3001", "Define the variable before using it.", "variable '%s' is not defined.", node->variable_reference.name);
         }
 
         return &variable->value;
@@ -291,31 +317,19 @@ static Value *resolve_array_element(
         if (array->type != VALUE_ARRAY)
         {
             value_free(&index);
-            fprintf(
-                stderr,
-                "Syger runtime error: indexing requires an array.\n"
-            );
-            exit(1);
+            diagnostics_runtime_errorf("E3005", "Index only an array value.", "indexing requires an array.\n");
         }
 
         if (index.type != VALUE_INT)
         {
             value_free(&index);
-            fprintf(
-                stderr,
-                "Syger runtime error: array index must be an integer.\n"
-            );
-            exit(1);
+            diagnostics_runtime_errorf("E3006", "Use an integer array index.", "array index must be an integer.\n");
         }
 
         if (index.integer < 0 || index.integer >= array->array.count)
         {
             value_free(&index);
-            fprintf(
-                stderr,
-                "Syger runtime error: array index out of bounds.\n"
-            );
-            exit(1);
+            diagnostics_runtime_errorf("E3007", "Use an index within the array bounds.", "array index out of bounds.\n");
         }
 
         Value *element = &array->array.elements[index.integer];
@@ -323,11 +337,7 @@ static Value *resolve_array_element(
         return element;
     }
 
-    fprintf(
-        stderr,
-        "Syger runtime error: array assignment requires an array expression.\n"
-    );
-    exit(1);
+    diagnostics_runtime_errorf("E3009", "Pass an array value.", "array assignment requires an array expression.\n");
 }
 
 static int value_equals(const Value *left, const Value *right)
@@ -383,24 +393,14 @@ static Value *require_array_argument(
     if (node->type != AST_VARIABLE_REFERENCE &&
         node->type != AST_INDEX)
     {
-        fprintf(
-            stderr,
-            "Syger runtime error: %s requires an array variable or indexed array.\n",
-            name
-        );
-        exit(1);
+        diagnostics_runtime_errorf("E3008", "Pass an array variable or an indexed array.", "%s requires an array variable or indexed array.", name);
     }
 
     Value *value = resolve_array_element(node, environment);
 
     if (value->type != VALUE_ARRAY)
     {
-        fprintf(
-            stderr,
-            "Syger runtime error: %s requires an array.\n",
-            name
-        );
-        exit(1);
+        diagnostics_runtime_errorf("E3009", "Pass an array value.", "%s requires an array.", name);
     }
 
     return value;
@@ -413,13 +413,9 @@ static long require_integer_value(
 {
     if (value->type != VALUE_INT)
     {
-        fprintf(
-            stderr,
-            "Syger runtime error: %s requires an integer index.\n",
-            name
+        diagnostics_runtime_errorf("E3010", "Pass an integer index.", "%s requires an integer index.", name
         );
         value_free(value);
-        exit(1);
     }
 
     return value->integer;
@@ -436,12 +432,7 @@ static void check_array_index(
 
     if (index < 0 || index > upper)
     {
-        fprintf(
-            stderr,
-            "Syger runtime error: %s index out of bounds.\n",
-            name
-        );
-        exit(1);
+        diagnostics_runtime_errorf("E3011", "Use an index within the valid range.", "%s index out of bounds.", name);
     }
 }
 
@@ -456,37 +447,40 @@ static Value evaluate_array_builtin(
     {
         if (node->call.argument_count != 1)
         {
-            fprintf(stderr, "Syger runtime error: length expects 1 argument.\n");
-            exit(1);
+            diagnostics_runtime_errorf("E3003", "Pass the required number of arguments.", "length expects 1 argument.\n");
         }
 
-        Value value = evaluate(node->call.arguments[0], environment);
+        AstNode *argument = node->call.arguments[0];
+        if (argument->type == AST_VARIABLE_REFERENCE || argument->type == AST_INDEX)
+        {
+            Value *value = resolve_array_element(argument, environment);
+            if (value->type == VALUE_ARRAY) return value_int(value->array.count);
+            if (value->type == VALUE_STRING) return value_int((long)strlen(value->string));
+            diagnostics_runtime_errorf("E3009", "Pass an array value.", "length requires an array or string.\n");
+        }
 
+        Value value = evaluate(argument, environment);
         if (value.type == VALUE_ARRAY)
         {
             int count = value.array.count;
             value_free(&value);
             return value_int(count);
         }
-
         if (value.type == VALUE_STRING)
         {
             size_t count = strlen(value.string);
             value_free(&value);
             return value_int((long)count);
         }
-
         value_free(&value);
-        fprintf(stderr, "Syger runtime error: length requires an array or string.\n");
-        exit(1);
+        diagnostics_runtime_errorf("E3009", "Pass an array value.", "length requires an array or string.\n");
     }
 
     if (strcmp(name, "append") == 0)
     {
         if (node->call.argument_count != 2)
         {
-            fprintf(stderr, "Syger runtime error: append expects 2 arguments.\n");
-            exit(1);
+            diagnostics_runtime_errorf("E3003", "Pass the required number of arguments.", "append expects 2 arguments.\n");
         }
 
         Value *array = require_array_argument(
@@ -505,8 +499,7 @@ static Value evaluate_array_builtin(
         if (elements == NULL)
         {
             value_free(&value);
-            fprintf(stderr, "Syger: out of memory.\n");
-            exit(1);
+            diagnostics_fatal("E0003", "Out of memory.", "Close other applications or reduce the size of the input.");
         }
 
         array->array.elements = elements;
@@ -520,8 +513,7 @@ static Value evaluate_array_builtin(
     {
         if (node->call.argument_count != 1)
         {
-            fprintf(stderr, "Syger runtime error: pop expects 1 argument.\n");
-            exit(1);
+            diagnostics_runtime_errorf("E3003", "Pass the required number of arguments.", "pop expects 1 argument.\n");
         }
 
         Value *array = require_array_argument(
@@ -532,8 +524,7 @@ static Value evaluate_array_builtin(
 
         if (array->array.count == 0)
         {
-            fprintf(stderr, "Syger runtime error: pop cannot remove from an empty array.\n");
-            exit(1);
+            diagnostics_runtime_errorf("E3012", "Check that the array is not empty first.", "pop cannot remove from an empty array.\n");
         }
 
         int index = array->array.count - 1;
@@ -565,8 +556,7 @@ static Value evaluate_array_builtin(
     {
         if (node->call.argument_count != 3)
         {
-            fprintf(stderr, "Syger runtime error: insert expects 3 arguments.\n");
-            exit(1);
+            diagnostics_runtime_errorf("E3003", "Pass the required number of arguments.", "insert expects 3 arguments.\n");
         }
 
         Value *array = require_array_argument(
@@ -589,8 +579,7 @@ static Value evaluate_array_builtin(
         if (elements == NULL)
         {
             value_free(&value);
-            fprintf(stderr, "Syger: out of memory.\n");
-            exit(1);
+            diagnostics_fatal("E0003", "Out of memory.", "Close other applications or reduce the size of the input.");
         }
 
         array->array.elements = elements;
@@ -610,8 +599,7 @@ static Value evaluate_array_builtin(
     {
         if (node->call.argument_count != 2)
         {
-            fprintf(stderr, "Syger runtime error: remove expects 2 arguments.\n");
-            exit(1);
+            diagnostics_runtime_errorf("E3003", "Pass the required number of arguments.", "remove expects 2 arguments.\n");
         }
 
         Value *array = require_array_argument(
@@ -658,8 +646,7 @@ static Value evaluate_array_builtin(
     {
         if (node->call.argument_count != 2)
         {
-            fprintf(stderr, "Syger runtime error: contains expects 2 arguments.\n");
-            exit(1);
+            diagnostics_runtime_errorf("E3003", "Pass the required number of arguments.", "contains expects 2 arguments.\n");
         }
 
         Value array = evaluate(node->call.arguments[0], environment);
@@ -669,8 +656,7 @@ static Value evaluate_array_builtin(
         {
             value_free(&array);
             value_free(&value);
-            fprintf(stderr, "Syger runtime error: contains requires an array.\n");
-            exit(1);
+            diagnostics_runtime_errorf("E3009", "Pass an array value.", "contains requires an array.\n");
         }
 
         int found = 0;
@@ -693,8 +679,7 @@ static Value evaluate_array_builtin(
     {
         if (node->call.argument_count != 2)
         {
-            fprintf(stderr, "Syger runtime error: index_of expects 2 arguments.\n");
-            exit(1);
+            diagnostics_runtime_errorf("E3003", "Pass the required number of arguments.", "index_of expects 2 arguments.\n");
         }
 
         Value array = evaluate(node->call.arguments[0], environment);
@@ -704,8 +689,7 @@ static Value evaluate_array_builtin(
         {
             value_free(&array);
             value_free(&value);
-            fprintf(stderr, "Syger runtime error: index_of requires an array.\n");
-            exit(1);
+            diagnostics_runtime_errorf("E3009", "Pass an array value.", "index_of requires an array.\n");
         }
 
         long index = -1;
@@ -728,8 +712,7 @@ static Value evaluate_array_builtin(
     {
         if (node->call.argument_count != 1)
         {
-            fprintf(stderr, "Syger runtime error: clear expects 1 argument.\n");
-            exit(1);
+            diagnostics_runtime_errorf("E3003", "Pass the required number of arguments.", "clear expects 1 argument.\n");
         }
 
         Value *array = require_array_argument(
@@ -754,8 +737,7 @@ static Value evaluate_array_builtin(
     {
         if (node->call.argument_count != 1)
         {
-            fprintf(stderr, "Syger runtime error: reverse expects 1 argument.\n");
-            exit(1);
+            diagnostics_runtime_errorf("E3003", "Pass the required number of arguments.", "reverse expects 1 argument.\n");
         }
 
         Value *array = require_array_argument(
@@ -780,8 +762,7 @@ static Value evaluate_array_builtin(
     {
         if (node->call.argument_count != 3)
         {
-            fprintf(stderr, "Syger runtime error: slice expects 3 arguments.\n");
-            exit(1);
+            diagnostics_runtime_errorf("E3003", "Pass the required number of arguments.", "slice expects 3 arguments.\n");
         }
 
         Value array = evaluate(node->call.arguments[0], environment);
@@ -793,8 +774,7 @@ static Value evaluate_array_builtin(
             value_free(&array);
             value_free(&start_value);
             value_free(&end_value);
-            fprintf(stderr, "Syger runtime error: slice requires an array.\n");
-            exit(1);
+            diagnostics_runtime_errorf("E3009", "Pass an array value.", "slice requires an array.\n");
         }
 
         long start = require_integer_value(&start_value, "slice");
@@ -803,8 +783,7 @@ static Value evaluate_array_builtin(
         if (start < 0 || end < start || end > array.array.count)
         {
             value_free(&array);
-            fprintf(stderr, "Syger runtime error: slice indices out of bounds.\n");
-            exit(1);
+            diagnostics_runtime_errorf("E3007", "Use indices within the array bounds.", "slice indices are out of bounds.");
         }
 
         Value result = value_array((int)(end - start));
@@ -823,8 +802,7 @@ static Value evaluate_array_builtin(
     {
         if (node->call.argument_count != 2)
         {
-            fprintf(stderr, "Syger runtime error: join expects 2 arguments.\n");
-            exit(1);
+            diagnostics_runtime_errorf("E3003", "Pass the required number of arguments.", "join expects 2 arguments.\n");
         }
 
         Value array = evaluate(node->call.arguments[0], environment);
@@ -834,8 +812,7 @@ static Value evaluate_array_builtin(
         {
             value_free(&array);
             value_free(&separator);
-            fprintf(stderr, "Syger runtime error: join requires an array and a string separator.\n");
-            exit(1);
+            diagnostics_runtime_errorf("E3009", "Pass an array value.", "join requires an array and a string separator.\n");
         }
 
         size_t total = 1;
@@ -847,8 +824,7 @@ static Value evaluate_array_builtin(
             {
                 value_free(&array);
                 value_free(&separator);
-                fprintf(stderr, "Syger runtime error: join requires an array of strings.\n");
-                exit(1);
+                diagnostics_runtime_errorf("E3009", "Pass an array value.", "join requires an array of strings.\n");
             }
 
             total += strlen(array.array.elements[i].string);
@@ -865,8 +841,7 @@ static Value evaluate_array_builtin(
         {
             value_free(&array);
             value_free(&separator);
-            fprintf(stderr, "Syger: out of memory.\n");
-            exit(1);
+            diagnostics_fatal("E0003", "Out of memory.", "Close other applications or reduce the size of the input.");
         }
 
         result[0] = '\0';
@@ -894,8 +869,7 @@ static Value evaluate_array_builtin(
     {
         if (node->call.argument_count != 1)
         {
-            fprintf(stderr, "Syger runtime error: array reduction expects 1 argument.\n");
-            exit(1);
+            diagnostics_runtime_errorf("E3003", "Pass the required number of arguments.", "array reduction expects 1 argument.\n");
         }
 
         Value array = evaluate(node->call.arguments[0], environment);
@@ -903,15 +877,13 @@ static Value evaluate_array_builtin(
         if (array.type != VALUE_ARRAY)
         {
             value_free(&array);
-            fprintf(stderr, "Syger runtime error: array reduction requires an array.\n");
-            exit(1);
+            diagnostics_runtime_errorf("E3009", "Pass an array value.", "array reduction requires an array.\n");
         }
 
         if (array.array.count == 0)
         {
             value_free(&array);
-            fprintf(stderr, "Syger runtime error: array reduction requires a non-empty array.\n");
-            exit(1);
+            diagnostics_runtime_errorf("E3013", "Check that the array is not empty first.", "array reduction requires a non-empty array.\n");
         }
 
         for (int i = 0; i < array.array.count; i++)
@@ -919,8 +891,7 @@ static Value evaluate_array_builtin(
             if (array.array.elements[i].type != VALUE_INT)
             {
                 value_free(&array);
-                fprintf(stderr, "Syger runtime error: array reduction requires an array of integers.\n");
-                exit(1);
+                diagnostics_runtime_errorf("E3009", "Pass an array value.", "array reduction requires an array of integers.\n");
             }
         }
 
@@ -961,8 +932,7 @@ static Value evaluate_array_builtin(
     {
         if (node->call.argument_count != 1)
         {
-            fprintf(stderr, "Syger runtime error: first/last expects 1 argument.\n");
-            exit(1);
+            diagnostics_runtime_errorf("E3003", "Pass the required number of arguments.", "first/last expects 1 argument.\n");
         }
 
         Value array = evaluate(node->call.arguments[0], environment);
@@ -970,15 +940,13 @@ static Value evaluate_array_builtin(
         if (array.type != VALUE_ARRAY)
         {
             value_free(&array);
-            fprintf(stderr, "Syger runtime error: first/last requires an array.\n");
-            exit(1);
+            diagnostics_runtime_errorf("E3009", "Pass an array value.", "first/last requires an array.\n");
         }
 
         if (array.array.count == 0)
         {
             value_free(&array);
-            fprintf(stderr, "Syger runtime error: first/last cannot be used on an empty array.\n");
-            exit(1);
+            diagnostics_runtime_errorf("E3013", "Check that the array is not empty first.", "first/last cannot be used on an empty array.\n");
         }
 
         int index = strcmp(name, "first") == 0 ? 0 : array.array.count - 1;
@@ -991,8 +959,7 @@ static Value evaluate_array_builtin(
     {
         if (node->call.argument_count != 1)
         {
-            fprintf(stderr, "Syger runtime error: sort expects 1 argument.\n");
-            exit(1);
+            diagnostics_runtime_errorf("E3003", "Pass the required number of arguments.", "sort expects 1 argument.\n");
         }
 
         Value *array = require_array_argument(
@@ -1005,11 +972,7 @@ static Value evaluate_array_builtin(
         {
             if (array->array.elements[i].type != VALUE_INT)
             {
-                fprintf(
-                    stderr,
-                    "Syger runtime error: sort currently requires an array of integers.\n"
-                );
-                exit(1);
+                diagnostics_runtime_errorf("E3009", "Pass an array value.", "sort currently requires an array of integers.\n");
             }
         }
 
@@ -1033,6 +996,347 @@ static Value evaluate_array_builtin(
     return value_int(0);
 }
 
+static Value evaluate_runtime_builtin(
+    AstNode *node,
+    Environment *environment
+)
+{
+    const char *name = node->call.name;
+
+    if (strcmp(name, "token_at") == 0)
+    {
+        if (node->call.argument_count != 2)
+        {
+            diagnostics_runtime_errorf("E3121", "Pass an array and integer index.", "token_at expects two arguments.");
+        }
+        AstNode *array_node = node->call.arguments[0];
+        if (array_node->type != AST_VARIABLE_REFERENCE && array_node->type != AST_INDEX)
+        {
+            diagnostics_runtime_errorf("E3122", "Pass an array variable.", "token_at requires an array variable or indexed array.");
+        }
+        Value *array = resolve_array_element(array_node, environment);
+        Value index_value = evaluate(node->call.arguments[1], environment);
+        if (array->type != VALUE_ARRAY || index_value.type != VALUE_INT)
+        {
+            value_free(&index_value);
+            diagnostics_runtime_errorf("E3123", "Pass an array and integer index.", "token_at expects (array, integer).");
+        }
+        long index = index_value.integer;
+        value_free(&index_value);
+        if (index < 0 || index >= array->array.count)
+        {
+            diagnostics_runtime_errorf("E3124", "Use an index within the array range.", "token_at index out of bounds.");
+        }
+        return value_copy(&array->array.elements[index]);
+    }
+
+    if (strcmp(name, "args") == 0)
+    {
+        if (node->call.argument_count != 0)
+        {
+            diagnostics_runtime_errorf("E3100", "Call args() without parameters.", "args expects no arguments.");
+        }
+
+        Value result = value_array(runtime_argument_count);
+        for (int i = 0; i < runtime_argument_count; i++)
+        {
+            result.array.elements[i] = value_string(runtime_arguments[i]);
+        }
+        return result;
+    }
+
+    if (strcmp(name, "type_of") == 0)
+    {
+        if (node->call.argument_count != 1)
+        {
+            diagnostics_runtime_errorf("E3120", "Pass one value.", "type_of expects one argument.");
+        }
+        Value value = evaluate(node->call.arguments[0], environment);
+        const char *type_name = "none";
+        switch (value.type)
+        {
+            case VALUE_STRING: type_name = "string"; break;
+            case VALUE_INT: type_name = "integer"; break;
+            case VALUE_BOOL: type_name = "boolean"; break;
+            case VALUE_NONE: type_name = "none"; break;
+            case VALUE_ARRAY: type_name = "array"; break;
+        }
+        Value result = value_string(type_name);
+        value_free(&value);
+        return result;
+    }
+
+    if (strcmp(name, "fail") == 0)
+    {
+        if (node->call.argument_count != 1)
+        {
+            diagnostics_runtime_errorf("E3117", "Pass one error message.", "fail expects one string argument.");
+        }
+        Value message = evaluate(node->call.arguments[0], environment);
+        if (message.type != VALUE_STRING)
+        {
+            value_free(&message);
+            diagnostics_runtime_errorf("E3118", "Pass a string error message.", "fail requires a string.");
+        }
+        diagnostics_runtime_errorf("E3119", "Fix the reported problem and run again.", "%s", message.string);
+    }
+
+    if (strcmp(name, "to_string") == 0)
+    {
+        if (node->call.argument_count != 1)
+        {
+            diagnostics_runtime_errorf("E3113", "Pass one value.", "to_string expects one argument.");
+        }
+
+        Value value = evaluate(node->call.arguments[0], environment);
+        char buffer[64];
+        const char *text = NULL;
+
+        if (value.type == VALUE_STRING)
+        {
+            Value result = value_string(value.string);
+            value_free(&value);
+            return result;
+        }
+        else if (value.type == VALUE_INT)
+        {
+            snprintf(buffer, sizeof(buffer), "%ld", value.integer);
+            text = buffer;
+        }
+        else if (value.type == VALUE_BOOL)
+        {
+            text = value.boolean ? "true" : "false";
+        }
+        else if (value.type == VALUE_NONE)
+        {
+            text = "none";
+        }
+        else
+        {
+            value_free(&value);
+            diagnostics_runtime_errorf("E3114", "Convert a scalar value.", "to_string does not accept arrays.");
+        }
+
+        Value result = value_string(text);
+        value_free(&value);
+        return result;
+    }
+
+    if (strcmp(name, "chr") == 0)
+    {
+        if (node->call.argument_count != 1)
+        {
+            diagnostics_runtime_errorf("E3115", "Pass one integer character code.", "chr expects one integer argument.");
+        }
+
+        Value code_value = evaluate(node->call.arguments[0], environment);
+        if (code_value.type != VALUE_INT || code_value.integer < 0 || code_value.integer > 127)
+        {
+            value_free(&code_value);
+            diagnostics_runtime_errorf("E3116", "Pass an integer from 0 through 127.", "chr currently supports ASCII character codes only.");
+        }
+
+        char character[2] = { (char)code_value.integer, '\0' };
+        value_free(&code_value);
+        return value_string(character);
+    }
+
+    if (strcmp(name, "read_file") == 0)
+    {
+        if (node->call.argument_count != 1)
+        {
+            diagnostics_runtime_errorf("E3101", "Pass one file path.", "read_file expects one string argument.");
+        }
+
+        Value path = evaluate(node->call.arguments[0], environment);
+        if (path.type != VALUE_STRING)
+        {
+            value_free(&path);
+            diagnostics_runtime_errorf("E3102", "Pass a string path.", "read_file requires a string path.");
+        }
+
+        FILE *file = fopen(path.string, "rb");
+        if (file == NULL)
+        {
+            diagnostics_runtime_errorf("E3103", "Check that the file exists and is readable.", "read_file could not open '%s'.", path.string);
+        }
+
+        if (fseek(file, 0, SEEK_END) != 0)
+        {
+            fclose(file);
+            value_free(&path);
+            diagnostics_runtime_errorf("E3104", "Use a readable regular file.", "read_file could not seek to the end of the file.");
+        }
+
+        long file_size = ftell(file);
+        if (file_size < 0 || fseek(file, 0, SEEK_SET) != 0)
+        {
+            fclose(file);
+            value_free(&path);
+            diagnostics_runtime_errorf("E3104", "Use a readable regular file.", "read_file could not determine the file size.");
+        }
+
+        char *buffer = malloc((size_t)file_size + 1);
+        if (buffer == NULL)
+        {
+            fclose(file);
+            value_free(&path);
+            diagnostics_fatal("E0003", "Out of memory.", "Close other applications or reduce the input size.");
+        }
+
+        size_t bytes_read = fread(buffer, 1, (size_t)file_size, file);
+        if (ferror(file))
+        {
+            free(buffer);
+            fclose(file);
+            value_free(&path);
+            diagnostics_runtime_errorf("E3105", "Check file permissions and storage health.", "read_file failed while reading the file.");
+        }
+
+        buffer[bytes_read] = '\0';
+        fclose(file);
+        value_free(&path);
+        Value result = value_string(buffer);
+        free(buffer);
+        return result;
+    }
+
+    if (strcmp(name, "write_file") == 0)
+    {
+        if (node->call.argument_count != 2)
+        {
+            diagnostics_runtime_errorf("E3106", "Pass a path and text.", "write_file expects two string arguments.");
+        }
+
+        Value path = evaluate(node->call.arguments[0], environment);
+        Value content = evaluate(node->call.arguments[1], environment);
+        if (path.type != VALUE_STRING || content.type != VALUE_STRING)
+        {
+            value_free(&path);
+            value_free(&content);
+            diagnostics_runtime_errorf("E3107", "Pass string arguments.", "write_file requires a path and content, both strings.");
+        }
+
+        FILE *file = fopen(path.string, "wb");
+        if (file == NULL)
+        {
+            value_free(&path);
+            value_free(&content);
+            return value_bool(0);
+        }
+
+        size_t length = strlen(content.string);
+        size_t written = fwrite(content.string, 1, length, file);
+        int close_result = fclose(file);
+        int success = written == length && close_result == 0;
+        value_free(&path);
+        value_free(&content);
+        return value_bool(success);
+    }
+
+    if (strcmp(name, "char_at") == 0)
+    {
+        if (node->call.argument_count != 2)
+        {
+            diagnostics_runtime_errorf("E3108", "Pass a string and integer index.", "char_at expects two arguments.");
+        }
+
+        AstNode *text_node = node->call.arguments[0];
+        Value temporary_text = value_none();
+        Value *text = NULL;
+        if (text_node->type == AST_VARIABLE_REFERENCE || text_node->type == AST_INDEX)
+        {
+            text = resolve_array_element(text_node, environment);
+        }
+        else
+        {
+            temporary_text = evaluate(text_node, environment);
+            text = &temporary_text;
+        }
+        Value index_value = evaluate(node->call.arguments[1], environment);
+        if (text->type != VALUE_STRING || index_value.type != VALUE_INT)
+        {
+            value_free(&temporary_text);
+            value_free(&index_value);
+            diagnostics_runtime_errorf("E3109", "Pass a string and integer index.", "char_at expects (string, integer).");
+        }
+
+        long index = index_value.integer;
+        size_t length = strlen(text->string);
+        value_free(&index_value);
+        if (index < 0 || (size_t)index >= length)
+        {
+            value_free(&temporary_text);
+            return value_string("");
+        }
+
+        char character[2] = { text->string[index], '\0' };
+        Value result = value_string(character);
+        value_free(&temporary_text);
+        return result;
+    }
+
+    if (strcmp(name, "substring") == 0)
+    {
+        if (node->call.argument_count != 3)
+        {
+            diagnostics_runtime_errorf("E3110", "Pass a string, start index, and end index.", "substring expects three arguments.");
+        }
+
+        Value text = evaluate(node->call.arguments[0], environment);
+        Value start_value = evaluate(node->call.arguments[1], environment);
+        Value end_value = evaluate(node->call.arguments[2], environment);
+        if (text.type != VALUE_STRING || start_value.type != VALUE_INT || end_value.type != VALUE_INT)
+        {
+            value_free(&text);
+            value_free(&start_value);
+            value_free(&end_value);
+            diagnostics_runtime_errorf("E3111", "Pass (string, integer, integer).", "substring expects a string and two integer indices.");
+        }
+
+        long start = start_value.integer;
+        long end = end_value.integer;
+        size_t length = strlen(text.string);
+        value_free(&start_value);
+        value_free(&end_value);
+        if (start < 0 || end < start || (size_t)end > length)
+        {
+            value_free(&text);
+            diagnostics_runtime_errorf("E3112", "Use an end-exclusive range inside the string.", "substring indices are out of bounds.");
+        }
+
+        size_t result_length = (size_t)(end - start);
+        char *buffer = malloc(result_length + 1);
+        if (buffer == NULL)
+        {
+            value_free(&text);
+            diagnostics_fatal("E0003", "Out of memory.", "Close other applications or reduce the input size.");
+        }
+        memcpy(buffer, text.string + start, result_length);
+        buffer[result_length] = '\0';
+        Value result = value_string(buffer);
+        free(buffer);
+        value_free(&text);
+        return result;
+    }
+
+    return value_none();
+}
+
+static int is_runtime_builtin(const char *name)
+{
+    return strcmp(name, "args") == 0 ||
+           strcmp(name, "token_at") == 0 ||
+           strcmp(name, "type_of") == 0 ||
+           strcmp(name, "fail") == 0 ||
+           strcmp(name, "to_string") == 0 ||
+           strcmp(name, "chr") == 0 ||
+           strcmp(name, "read_file") == 0 ||
+           strcmp(name, "write_file") == 0 ||
+           strcmp(name, "char_at") == 0 ||
+           strcmp(name, "substring") == 0;
+}
+
 static Value evaluate_index(
     AstNode *array_node,
     AstNode *index_node,
@@ -1046,24 +1350,21 @@ static Value evaluate_index(
     {
         value_free(&array);
         value_free(&index);
-        fprintf(stderr, "Syger runtime error: indexing requires an array.\n");
-        exit(1);
+        diagnostics_runtime_errorf("E3005", "Index only an array value.", "indexing requires an array.\n");
     }
 
     if (index.type != VALUE_INT)
     {
         value_free(&array);
         value_free(&index);
-        fprintf(stderr, "Syger runtime error: array index must be an integer.\n");
-        exit(1);
+        diagnostics_runtime_errorf("E3006", "Use an integer array index.", "array index must be an integer.\n");
     }
 
     if (index.integer < 0 || index.integer >= array.array.count)
     {
         value_free(&array);
         value_free(&index);
-        fprintf(stderr, "Syger runtime error: array index out of bounds.\n");
-        exit(1);
+        diagnostics_runtime_errorf("E3007", "Use an index within the array bounds.", "array index out of bounds.\n");
     }
 
     Value result = value_copy(&array.array.elements[index.integer]);
@@ -1133,11 +1434,7 @@ static Value evaluate(
             case TOKEN_NOT:
                 if (operand.type != VALUE_BOOL)
                 {
-                    fprintf(
-                        stderr,
-                        "Syger runtime error: 'not' requires a boolean value.\n"
-                    );
-                    exit(1);
+                    diagnostics_runtime_errorf("E3016", "Use not with a boolean value.", "'not' requires a boolean value.\n");
                 }
 
                 return value_bool(!operand.boolean);
@@ -1145,21 +1442,13 @@ static Value evaluate(
             case TOKEN_MINUS:
                 if (operand.type != VALUE_INT)
                 {
-                    fprintf(
-                        stderr,
-                        "Syger runtime error: unary '-' requires an integer value.\n"
-                    );
-                    exit(1);
+                    diagnostics_runtime_errorf("E3017", "Use unary - with an integer value.", "unary '-' requires an integer value.\n");
                 }
 
                 return value_int(-operand.integer);
 
             default:
-                fprintf(
-                    stderr,
-                    "Syger runtime error: unknown unary operator.\n"
-                );
-                exit(1);
+                diagnostics_runtime_errorf("E3023", "Use a supported unary operator.", "unknown unary operator.\n");
         }
     }
 
@@ -1172,12 +1461,7 @@ static Value evaluate(
 
         if (variable == NULL)
         {
-            fprintf(
-                stderr,
-                "Syger runtime error: variable '%s' is not defined.\n",
-                node->variable_reference.name
-            );
-            exit(1);
+            diagnostics_runtime_errorf("E3001", "Define the variable before using it.", "variable '%s' is not defined.", node->variable_reference.name);
         }
 
         return value_copy(&variable->value);
@@ -1185,6 +1469,11 @@ static Value evaluate(
 
     if (node->type == AST_CALL)
     {
+        if (is_runtime_builtin(node->call.name))
+        {
+            return evaluate_runtime_builtin(node, environment);
+        }
+
         if (strcmp(node->call.name, "length") == 0 ||
             strcmp(node->call.name, "append") == 0 ||
             strcmp(node->call.name, "pop") == 0 ||
@@ -1230,28 +1519,16 @@ static Value evaluate(
 
         if (function == NULL)
         {
-            fprintf(
-                stderr,
-                "Syger runtime error: function '%s' is not defined.\n",
-                node->call.name
-            );
-            exit(1);
+            diagnostics_runtime_errorf("E3002", "Define the function before calling it.", "function '%s' is not defined.", node->call.name);
         }
 
         if (function->parameter_count != node->call.argument_count)
         {
-            fprintf(
-                stderr,
-                "Syger runtime error: function '%s' expects %d argument(s), got %d.\n",
-                node->call.name,
-                function->parameter_count,
-                node->call.argument_count
-            );
-            exit(1);
+            diagnostics_runtime_errorf("E3003", "Pass the required number of arguments.", "function '%s' expects %d argument(s), got %d.", node->call.name, function->parameter_count, node->call.argument_count);
         }
 
         Environment *function_environment =
-            environment_create(environment);
+            environment_create_function(environment);
 
         for (int i = 0; i < function->parameter_count; i++)
         {
@@ -1276,11 +1553,7 @@ static Value evaluate(
 
         if (function_result.broke || function_result.continued)
         {
-            fprintf(
-                stderr,
-                "Syger runtime error: loop control statement outside of a loop.\n"
-            );
-            exit(1);
+            diagnostics_runtime_errorf("E3004", "Use break or continue inside a loop.", "loop control statement outside of a loop.\n");
         }
 
         return function_result.value;
@@ -1297,11 +1570,7 @@ static Value evaluate(
 
             if (left.type != VALUE_BOOL)
             {
-                fprintf(
-                    stderr,
-                    "Syger runtime error: 'and' requires boolean values.\n"
-                );
-                exit(1);
+                diagnostics_runtime_errorf("E3018", "Use and with boolean values.", "'and' requires boolean values.\n");
             }
 
             if (!left.boolean)
@@ -1316,11 +1585,7 @@ static Value evaluate(
 
             if (right.type != VALUE_BOOL)
             {
-                fprintf(
-                    stderr,
-                    "Syger runtime error: 'and' requires boolean values.\n"
-                );
-                exit(1);
+                diagnostics_runtime_errorf("E3018", "Use and with boolean values.", "'and' requires boolean values.\n");
             }
 
             return value_bool(right.boolean);
@@ -1335,11 +1600,7 @@ static Value evaluate(
 
             if (left.type != VALUE_BOOL)
             {
-                fprintf(
-                    stderr,
-                    "Syger runtime error: 'or' requires boolean values.\n"
-                );
-                exit(1);
+                diagnostics_runtime_errorf("E3019", "Use or with boolean values.", "'or' requires boolean values.\n");
             }
 
             if (left.boolean)
@@ -1354,11 +1615,7 @@ static Value evaluate(
 
             if (right.type != VALUE_BOOL)
             {
-                fprintf(
-                    stderr,
-                    "Syger runtime error: 'or' requires boolean values.\n"
-                );
-                exit(1);
+                diagnostics_runtime_errorf("E3019", "Use or with boolean values.", "'or' requires boolean values.\n");
             }
 
             return value_bool(right.boolean);
@@ -1388,11 +1645,7 @@ static Value evaluate(
                 default:
                     value_free(&left);
                     value_free(&right);
-                    fprintf(
-                        stderr,
-                        "Syger runtime error: unsupported none operator.\n"
-                    );
-                    exit(1);
+                    diagnostics_runtime_errorf("E3020", "Use none only with supported operators.", "unsupported none operator.\n");
             }
         }
 
@@ -1412,8 +1665,7 @@ static Value evaluate(
 
                     if (result == NULL)
                     {
-                        fprintf(stderr, "Syger: out of memory.\n");
-                        exit(1);
+                        diagnostics_fatal("E0003", "Out of memory.", "Close other applications or reduce the size of the input.");
                     }
 
                     memcpy(result, left.string, left_length);
@@ -1449,11 +1701,7 @@ static Value evaluate(
                 default:
                     value_free(&left);
                     value_free(&right);
-                    fprintf(
-                        stderr,
-                        "Syger runtime error: unsupported string operator.\n"
-                    );
-                    exit(1);
+                    diagnostics_runtime_errorf("E3021", "Use strings with supported operators.", "unsupported string operator.\n");
             }
         }
 
@@ -1461,11 +1709,7 @@ static Value evaluate(
         {
             value_free(&left);
             value_free(&right);
-            fprintf(
-                stderr,
-                "Syger runtime error: arithmetic and numeric comparisons require integer values.\n"
-            );
-            exit(1);
+            diagnostics_runtime_errorf("E3022", "Use integers for arithmetic and numeric comparisons.", "arithmetic and numeric comparisons require integer values.\n");
         }
 
         switch (node->binary.operator)
@@ -1482,11 +1726,7 @@ static Value evaluate(
             case TOKEN_SLASH:
                 if (right.integer == 0)
                 {
-                    fprintf(
-                        stderr,
-                        "Syger runtime error: division by zero.\n"
-                    );
-                    exit(1);
+                    diagnostics_runtime_errorf("E3014", "Make sure the divisor is not zero.", "division by zero.\n");
                 }
 
                 return value_int(left.integer / right.integer);
@@ -1494,11 +1734,7 @@ static Value evaluate(
             case TOKEN_PERCENT:
                 if (right.integer == 0)
                 {
-                    fprintf(
-                        stderr,
-                        "Syger runtime error: modulo by zero.\n"
-                    );
-                    exit(1);
+                    diagnostics_runtime_errorf("E3015", "Make sure the divisor is not zero.", "modulo by zero.\n");
                 }
 
                 return value_int(left.integer % right.integer);
@@ -1522,19 +1758,11 @@ static Value evaluate(
                 return value_bool(left.integer >= right.integer);
 
             default:
-                fprintf(
-                    stderr,
-                    "Syger runtime error: unknown binary operator.\n"
-                );
-                exit(1);
+                diagnostics_runtime_errorf("E3024", "Use a supported binary operator.", "unknown binary operator.\n");
         }
     }
 
-    fprintf(
-        stderr,
-        "Syger runtime error: invalid expression.\n"
-    );
-    exit(1);
+    diagnostics_runtime_errorf("E3025", "Provide a valid expression.", "invalid expression.\n");
 }
 
 static ExecutionResult execute(
@@ -1627,24 +1855,21 @@ static ExecutionResult execute(
             {
                 value_free(&index);
                 value_free(&value);
-                fprintf(stderr, "Syger runtime error: indexing requires an array.\n");
-                exit(1);
+                diagnostics_runtime_errorf("E3005", "Index only an array value.", "indexing requires an array.\n");
             }
 
             if (index.type != VALUE_INT)
             {
                 value_free(&index);
                 value_free(&value);
-                fprintf(stderr, "Syger runtime error: array index must be an integer.\n");
-                exit(1);
+                diagnostics_runtime_errorf("E3006", "Use an integer array index.", "array index must be an integer.\n");
             }
 
             if (index.integer < 0 || index.integer >= array->array.count)
             {
                 value_free(&index);
                 value_free(&value);
-                fprintf(stderr, "Syger runtime error: array index out of bounds.\n");
-                exit(1);
+                diagnostics_runtime_errorf("E3007", "Use an index within the array bounds.", "array index out of bounds.\n");
             }
 
             value_free(&array->array.elements[index.integer]);
@@ -1684,11 +1909,7 @@ static ExecutionResult execute(
 
             if (condition.type != VALUE_BOOL)
             {
-                fprintf(
-                    stderr,
-                    "Syger runtime error: if condition must be a boolean.\n"
-                );
-                exit(1);
+                diagnostics_runtime_errorf("E3026", "Use a boolean expression as the if condition.", "if condition must be a boolean.\n");
             }
 
             if (condition.boolean)
@@ -1732,11 +1953,7 @@ static ExecutionResult execute(
 
                 if (condition.type != VALUE_BOOL)
                 {
-                    fprintf(
-                        stderr,
-                        "Syger runtime error: while condition must be a boolean.\n"
-                    );
-                    exit(1);
+                    diagnostics_runtime_errorf("E3027", "Use a boolean expression as the while condition.", "while condition must be a boolean.\n");
                 }
 
                 if (!condition.boolean)
@@ -1795,10 +2012,6 @@ void interpreter_run(AstNode *program)
 
     if (result.broke || result.continued)
     {
-        fprintf(
-            stderr,
-            "Syger runtime error: loop control statement outside of a loop.\n"
-        );
-        exit(1);
+        diagnostics_runtime_errorf("E3004", "Use break or continue inside a loop.", "loop control statement outside of a loop.\n");
     }
 }

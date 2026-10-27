@@ -1,0 +1,721 @@
+# Syger's first self-hosted compiler.
+# It parses Syger source and emits C that uses the small Syger native runtime.
+# The bootstrap interpreter is used for stage0; the generated compiler can then
+# compile this same file again for stage1/stage2 bootstrap verification.
+
+fun string_chars(text)
+    result = []
+    i = 0
+    while i < length(text)
+        append(result, char_at(text, i))
+        i = i + 1
+    return result
+
+fun is_digit(character)
+    return contains(digit_chars, character)
+
+fun is_letter(character)
+    return contains(lowercase_chars, character) or contains(uppercase_chars, character)
+
+fun is_identifier_start(character)
+    return is_letter(character) or character == "_"
+
+fun is_identifier_part(character)
+    return is_identifier_start(character) or is_digit(character)
+
+fun keyword_type(word)
+    if word == "if"
+        return "IF"
+    elif word == "else"
+        return "ELSE"
+    elif word == "elif"
+        return "ELIF"
+    elif word == "while"
+        return "WHILE"
+    elif word == "fun" or word == "def" or word == "function"
+        return "FUNCTION"
+    elif word == "return"
+        return "RETURN"
+    elif word == "break"
+        return "BREAK"
+    elif word == "continue"
+        return "CONTINUE"
+    elif word == "true"
+        return "TRUE"
+    elif word == "false"
+        return "FALSE"
+    elif word == "none"
+        return "NONE"
+    elif word == "and"
+        return "AND"
+    elif word == "or"
+        return "OR"
+    elif word == "not"
+        return "NOT"
+    return "IDENTIFIER"
+
+fun scan_tokens(source)
+    state = [source, 0, 1, true, [0], []]
+    tokens = state[5]
+    while state[1] < length(state[0])
+        if state[3]
+            indentation = 0
+            while char_at(state[0], state[1]) == " " or char_at(state[0], state[1]) == chr(9)
+                if char_at(state[0], state[1]) == " "
+                    indentation = indentation + 1
+                else
+                    indentation = indentation + 4
+                state[1] = state[1] + 1
+            character = char_at(state[0], state[1])
+            if character == chr(10)
+                state[1] = state[1] + 1
+                state[2] = state[2] + 1
+                continue
+            if character == "#"
+                while state[1] < length(state[0]) and char_at(state[0], state[1]) != chr(10)
+                    state[1] = state[1] + 1
+                if char_at(state[0], state[1]) == chr(10)
+                    state[1] = state[1] + 1
+                    state[2] = state[2] + 1
+                continue
+            current_indent = state[4][length(state[4]) - 1]
+            if indentation > current_indent
+                append(state[4], indentation)
+                append(tokens, ["INDENT", "", state[2]])
+            elif indentation < current_indent
+                while length(state[4]) > 1 and indentation < current_indent
+                    pop(state[4])
+                    append(tokens, ["DEDENT", "", state[2]])
+                    current_indent = state[4][length(state[4]) - 1]
+                if indentation != current_indent
+                    fail("Lexer error: inconsistent indentation on line " + to_string(state[2]))
+            state[3] = false
+
+        character = char_at(state[0], state[1])
+        if character == " " or character == chr(9) or character == chr(13)
+            state[1] = state[1] + 1
+            continue
+        if character == chr(10)
+            state[1] = state[1] + 1
+            state[2] = state[2] + 1
+            state[3] = true
+            continue
+        if character == "#"
+            while state[1] < length(state[0]) and char_at(state[0], state[1]) != chr(10)
+                state[1] = state[1] + 1
+            continue
+
+        start_position = state[1]
+        start_line = state[2]
+        if character == quote_character
+            state[1] = state[1] + 1
+            string_start = state[1]
+            while state[1] < length(state[0]) and char_at(state[0], state[1]) != quote_character
+                if char_at(state[0], state[1]) == chr(10)
+                    state[2] = state[2] + 1
+                state[1] = state[1] + 1
+            if char_at(state[0], state[1]) != quote_character
+                fail("Lexer error: unterminated string on line " + to_string(start_line))
+            string_value = substring(state[0], string_start, state[1])
+            state[1] = state[1] + 1
+            append(tokens, ["STRING", string_value, start_line])
+            continue
+
+        if is_digit(character)
+            while is_digit(char_at(state[0], state[1]))
+                state[1] = state[1] + 1
+            append(tokens, ["NUMBER", substring(state[0], start_position, state[1]), start_line])
+            continue
+
+        if is_identifier_start(character)
+            while is_identifier_part(char_at(state[0], state[1]))
+                state[1] = state[1] + 1
+            identifier = substring(state[0], start_position, state[1])
+            append(tokens, [keyword_type(identifier), identifier, start_line])
+            continue
+
+        next_character = char_at(state[0], state[1] + 1)
+        if character == "="
+            if next_character == "="
+                append(tokens, ["EQUAL_EQUAL", "==", start_line])
+                state[1] = state[1] + 2
+            else
+                append(tokens, ["EQUAL", "=", start_line])
+                state[1] = state[1] + 1
+            continue
+        if character == "!"
+            if next_character == "="
+                append(tokens, ["BANG_EQUAL", "!=", start_line])
+                state[1] = state[1] + 2
+                continue
+            fail("Lexer error: unexpected '!' on line " + to_string(start_line))
+        if character == "<"
+            if next_character == "="
+                append(tokens, ["LESS_EQUAL", "<=", start_line])
+                state[1] = state[1] + 2
+            else
+                append(tokens, ["LESS", "<", start_line])
+                state[1] = state[1] + 1
+            continue
+        if character == ">"
+            if next_character == "="
+                append(tokens, ["GREATER_EQUAL", ">=", start_line])
+                state[1] = state[1] + 2
+            else
+                append(tokens, ["GREATER", ">", start_line])
+                state[1] = state[1] + 1
+            continue
+
+        if character == "("
+            append(tokens, ["LEFT_PAREN", character, start_line])
+        elif character == ")"
+            append(tokens, ["RIGHT_PAREN", character, start_line])
+        elif character == ","
+            append(tokens, ["COMMA", character, start_line])
+        elif character == "+"
+            append(tokens, ["PLUS", character, start_line])
+        elif character == "-"
+            append(tokens, ["MINUS", character, start_line])
+        elif character == "*"
+            append(tokens, ["STAR", character, start_line])
+        elif character == "/"
+            append(tokens, ["SLASH", character, start_line])
+        elif character == "%"
+            append(tokens, ["PERCENT", character, start_line])
+        elif character == "["
+            append(tokens, ["LEFT_BRACKET", character, start_line])
+        elif character == "]"
+            append(tokens, ["RIGHT_BRACKET", character, start_line])
+        else
+            fail("Lexer error: invalid character on line " + to_string(start_line) + ": " + character)
+        state[1] = state[1] + 1
+
+    while length(state[4]) > 1
+        pop(state[4])
+        append(tokens, ["DEDENT", "", state[2]])
+    append(tokens, ["EOF", "", state[2]])
+    return tokens
+
+fun current_type()
+    return token_at(parser_tokens, parser_state[0])[0]
+
+fun current_token()
+    return token_at(parser_tokens, parser_state[0])
+
+fun advance_token()
+    previous = current_token()
+    if current_type() != "EOF"
+        parser_state[0] = parser_state[0] + 1
+    parser_state[1] = previous
+    return previous
+
+fun match_token(kind)
+    if current_type() == kind
+        advance_token()
+        return true
+    return false
+
+fun consume_token(kind, message)
+    if current_type() != kind
+        fail("Parser error on line " + to_string(current_token()[2]) + ": " + message)
+    return advance_token()
+
+fun parse_array_literal()
+    elements = []
+    if current_type() != "RIGHT_BRACKET"
+        while true
+            append(elements, parse_expression())
+            if not match_token("COMMA")
+                break
+    consume_token("RIGHT_BRACKET", "Expected ']' after array elements.")
+    return ["array", elements]
+
+fun parse_call(name)
+    consume_token("LEFT_PAREN", "Expected '(' after function name.")
+    arguments = []
+    if current_type() != "RIGHT_PAREN"
+        while true
+            append(arguments, parse_expression())
+            if not match_token("COMMA")
+                break
+    consume_token("RIGHT_PAREN", "Expected ')' after function arguments.")
+    return ["call", name, arguments]
+
+fun parse_postfix(node)
+    while match_token("LEFT_BRACKET")
+        index = parse_expression()
+        consume_token("RIGHT_BRACKET", "Expected ']' after array index.")
+        node = ["index", node, index]
+    return node
+
+fun parse_primary()
+    node = none
+    token = none
+    name = ""
+    if match_token("LEFT_PAREN")
+        node = parse_expression()
+        consume_token("RIGHT_PAREN", "Expected ')' after expression.")
+        return parse_postfix(node)
+    if match_token("LEFT_BRACKET")
+        node = parse_array_literal()
+        return parse_postfix(node)
+    if current_type() == "STRING"
+        token = advance_token()
+        return parse_postfix(["string", token[1]])
+    if current_type() == "NUMBER"
+        token = advance_token()
+        return parse_postfix(["integer", token[1]])
+    if match_token("TRUE")
+        return parse_postfix(["boolean", true])
+    if match_token("FALSE")
+        return parse_postfix(["boolean", false])
+    if match_token("NONE")
+        return parse_postfix(["none"])
+    if match_token("MINUS")
+        node = ["unary", "-", parse_primary()]
+        return parse_postfix(node)
+    if match_token("NOT")
+        node = ["unary", "not", parse_primary()]
+        return parse_postfix(node)
+    if current_type() == "IDENTIFIER"
+        token = advance_token()
+        if current_type() == "LEFT_PAREN"
+            node = parse_call(token[1])
+        else
+            node = ["variable", token[1]]
+        return parse_postfix(node)
+    fail("Parser error on line " + to_string(current_token()[2]) + ": expected expression.")
+    return ["none"]
+
+fun parse_multiplication()
+    left = parse_primary()
+    while current_type() == "STAR" or current_type() == "SLASH" or current_type() == "PERCENT"
+        operator = advance_token()[1]
+        right = parse_primary()
+        left = ["binary", operator, left, right]
+    return left
+
+fun parse_addition()
+    left = parse_multiplication()
+    while current_type() == "PLUS" or current_type() == "MINUS"
+        operator = advance_token()[1]
+        right = parse_multiplication()
+        left = ["binary", operator, left, right]
+    return left
+
+fun parse_comparison()
+    left = parse_addition()
+    while current_type() == "EQUAL_EQUAL" or current_type() == "BANG_EQUAL" or current_type() == "LESS" or current_type() == "LESS_EQUAL" or current_type() == "GREATER" or current_type() == "GREATER_EQUAL"
+        operator = advance_token()[1]
+        right = parse_addition()
+        left = ["binary", operator, left, right]
+    return left
+
+fun parse_not()
+    if match_token("NOT")
+        return ["unary", "not", parse_not()]
+    return parse_comparison()
+
+fun parse_and()
+    left = parse_not()
+    while match_token("AND")
+        right = parse_not()
+        left = ["binary", "and", left, right]
+    return left
+
+fun parse_or()
+    left = parse_and()
+    while match_token("OR")
+        right = parse_and()
+        left = ["binary", "or", left, right]
+    return left
+
+fun parse_expression()
+    return parse_or()
+
+fun parse_block()
+    consume_token("INDENT", "Expected an indented block.")
+    statements = []
+    while current_type() != "DEDENT" and current_type() != "EOF"
+        append(statements, parse_statement())
+    consume_token("DEDENT", "Expected end of block.")
+    return ["block", statements]
+
+fun parse_optional_else()
+    if match_token("ELIF")
+        condition = parse_expression()
+        body = parse_block()
+        return ["if", condition, body, parse_optional_else()]
+    if match_token("ELSE")
+        return parse_block()
+    return none
+
+fun parse_if_after_keyword()
+    condition = parse_expression()
+    body = parse_block()
+    return ["if", condition, body, parse_optional_else()]
+
+fun parse_function_after_keyword()
+    name_token = consume_token("IDENTIFIER", "Expected a function name.")
+    parameters = []
+    if match_token("LEFT_PAREN")
+        if current_type() != "RIGHT_PAREN"
+            while true
+                parameter = consume_token("IDENTIFIER", "Expected parameter name.")
+                append(parameters, parameter[1])
+                if not match_token("COMMA")
+                    break
+        consume_token("RIGHT_PAREN", "Expected ')' after parameters.")
+    body = parse_block()
+    return ["function", name_token[1], parameters, body]
+
+fun parse_statement()
+    if match_token("FUNCTION")
+        return parse_function_after_keyword()
+    if match_token("IF")
+        return parse_if_after_keyword()
+    if match_token("WHILE")
+        condition = parse_expression()
+        return ["while", condition, parse_block()]
+    if match_token("RETURN")
+        return ["return", parse_expression()]
+    if match_token("BREAK")
+        return ["break"]
+    if match_token("CONTINUE")
+        return ["continue"]
+
+    if current_type() != "IDENTIFIER"
+        fail("Parser error on line " + to_string(current_token()[2]) + ": expected statement.")
+    name_token = advance_token()
+    if match_token("EQUAL")
+        return ["assign", name_token[1], parse_expression()]
+    if current_type() == "LEFT_PAREN"
+        return parse_call(name_token[1])
+    if current_type() == "LEFT_BRACKET"
+        lvalue = parse_postfix(["variable", name_token[1]])
+        consume_token("EQUAL", "Expected '=' after indexed array expression.")
+        return ["index_assign", lvalue, parse_expression()]
+    fail("Parser error on line " + to_string(current_token()[2]) + ": expected '=' or function call.")
+    return ["none"]
+
+fun parse_program()
+    statements = []
+    while current_type() != "EOF"
+        append(statements, parse_statement())
+    return ["program", statements]
+
+fun assign_ids(node)
+    kind = node[0]
+    if kind == "program" or kind == "block"
+        statements = []
+        i = 0
+        while i < length(node[1])
+            append(statements, assign_ids(node[1][i]))
+            i = i + 1
+        return [kind, statements]
+    if kind == "function"
+        function_id_state[0] = function_id_state[0] + 1
+        function_id = function_id_state[0]
+        body = assign_ids(node[3])
+        result = ["function", node[1], node[2], body, function_id]
+        append(functions, result)
+        return result
+    if kind == "if"
+        body = assign_ids(node[2])
+        other = node[3]
+        if type_of(other) != "none"
+            other = assign_ids(other)
+        return ["if", node[1], body, other]
+    if kind == "while"
+        return ["while", node[1], assign_ids(node[2])]
+    return node
+
+fun spaces(count)
+    result = ""
+    i = 0
+    while i < count
+        result = result + "    "
+        i = i + 1
+    return result
+
+fun next_scope_name()
+    scope_counter[0] = scope_counter[0] + 1
+    return "syger_scope_" + to_string(scope_counter[0])
+
+fun c_quote(text)
+    result = quote_character
+    backslash = chr(92)
+    newline = chr(10)
+    tab = chr(9)
+    carriage_return = chr(13)
+    i = 0
+    while i < length(text)
+        character = char_at(text, i)
+        if character == quote_character
+            result = result + backslash + quote_character
+        elif character == backslash
+            result = result + backslash + backslash
+        elif character == newline
+            result = result + backslash + "n"
+        elif character == tab
+            result = result + backslash + "t"
+        elif character == carriage_return
+            result = result + backslash + "r"
+        else
+            result = result + character
+        i = i + 1
+    return result + quote_character
+
+fun emit_binary_operator(operator)
+    if operator == "+"
+        return "SYGER_OP_PLUS"
+    elif operator == "-"
+        return "SYGER_OP_MINUS"
+    elif operator == "*"
+        return "SYGER_OP_STAR"
+    elif operator == "/"
+        return "SYGER_OP_SLASH"
+    elif operator == "%"
+        return "SYGER_OP_PERCENT"
+    elif operator == "=="
+        return "SYGER_OP_EQUAL_EQUAL"
+    elif operator == "!="
+        return "SYGER_OP_BANG_EQUAL"
+    elif operator == "<"
+        return "SYGER_OP_LESS"
+    elif operator == "<="
+        return "SYGER_OP_LESS_EQUAL"
+    elif operator == ">"
+        return "SYGER_OP_GREATER"
+    elif operator == ">="
+        return "SYGER_OP_GREATER_EQUAL"
+    fail("Compiler error: unsupported operator " + operator)
+    return "SYGER_OP_PLUS"
+
+fun emit_expression_list(nodes, environment_name)
+    result = ""
+    i = 0
+    while i < length(nodes)
+        if i > 0
+            result = result + ", "
+        result = result + emit_expression(nodes[i], environment_name)
+        i = i + 1
+    return result
+
+fun is_lvalue(node)
+    if node[0] == "variable"
+        return true
+    if node[0] == "index"
+        return is_lvalue(node[1])
+    return false
+
+fun emit_lvalue(node, environment_name)
+    if node[0] == "variable"
+        return "syger_env_get_ptr(" + environment_name + ", " + c_quote(node[1]) + ")"
+    if node[0] == "index"
+        return "syger_index_ptr(" + emit_lvalue(node[1], environment_name) + ", " + emit_expression(node[2], environment_name) + ")"
+    fail("Compiler error: expression is not assignable.")
+    return "NULL"
+
+fun emit_call_argument(node, environment_name)
+    reference = "NULL"
+    if is_lvalue(node)
+        reference = emit_lvalue(node, environment_name)
+    return "syger_call_arg(" + emit_expression(node, environment_name) + ", " + reference + ")"
+
+fun emit_call_argument_list(nodes, environment_name)
+    result = ""
+    i = 0
+    while i < length(nodes)
+        if i > 0
+            result = result + ", "
+        result = result + emit_call_argument(nodes[i], environment_name)
+        i = i + 1
+    return result
+
+fun emit_expression(node, environment_name)
+    kind = node[0]
+    if kind == "string"
+        return "syger_value_string(" + c_quote(node[1]) + ")"
+    if kind == "integer"
+        return "syger_value_int(" + node[1] + ")"
+    if kind == "boolean"
+        if node[1]
+            return "syger_value_bool(1)"
+        return "syger_value_bool(0)"
+    if kind == "none"
+        return "syger_value_none()"
+    if kind == "variable"
+        return "syger_env_get(" + environment_name + ", " + c_quote(node[1]) + ")"
+    if kind == "array"
+        elements = node[1]
+        if length(elements) == 0
+            return "syger_value_array(0, NULL)"
+        return "syger_value_array(" + to_string(length(elements)) + ", (SygerValue[]){" + emit_expression_list(elements, environment_name) + "})"
+    if kind == "index"
+        return "syger_index(" + emit_expression(node[1], environment_name) + ", " + emit_expression(node[2], environment_name) + ")"
+    if kind == "call"
+        arguments = node[2]
+        if length(arguments) == 2 and node[1] == "token_at" and is_lvalue(arguments[0])
+            return "syger_array_at(" + emit_lvalue(arguments[0], environment_name) + ", " + emit_expression(arguments[1], environment_name) + ")"
+        if length(arguments) == 2 and node[1] == "char_at" and is_lvalue(arguments[0])
+            return "syger_char_at_ptr(" + emit_lvalue(arguments[0], environment_name) + ", " + emit_expression(arguments[1], environment_name) + ")"
+        if length(arguments) == 3 and node[1] == "substring" and is_lvalue(arguments[0])
+            return "syger_substring_ptr(" + emit_lvalue(arguments[0], environment_name) + ", " + emit_expression(arguments[1], environment_name) + ", " + emit_expression(arguments[2], environment_name) + ")"
+        if length(arguments) == 1 and node[1] == "length" and is_lvalue(arguments[0])
+            return "syger_length_ptr(" + emit_lvalue(arguments[0], environment_name) + ")"
+        argument_text = "NULL"
+        if length(arguments) > 0
+            argument_text = "(SygerCallArg[]){" + emit_call_argument_list(arguments, environment_name) + "}"
+        return "syger_call(" + environment_name + ", " + c_quote(node[1]) + ", " + to_string(length(arguments)) + ", " + argument_text + ")"
+    if kind == "unary"
+        if node[1] == "not"
+            return "syger_unary(SYGER_OP_NOT, " + emit_expression(node[2], environment_name) + ")"
+        return "syger_unary(SYGER_OP_NEGATE, " + emit_expression(node[2], environment_name) + ")"
+    if kind == "binary"
+        operator = node[1]
+        left = emit_expression(node[2], environment_name)
+        right = emit_expression(node[3], environment_name)
+        if operator == "and"
+            return "syger_value_bool(syger_require_bool(" + left + ") && syger_require_bool(" + right + "))"
+        if operator == "or"
+            return "syger_value_bool(syger_require_bool(" + left + ") || syger_require_bool(" + right + "))"
+        return "syger_binary(" + emit_binary_operator(operator) + ", " + left + ", " + right + ")"
+    fail("Compiler error: unknown expression node " + kind)
+    return "syger_value_none()"
+
+fun emit_statement_list(statements, environment_name, level, function_root, loop_depth)
+    result = ""
+    i = 0
+    while i < length(statements)
+        result = result + emit_statement(statements[i], environment_name, level, function_root, loop_depth)
+        i = i + 1
+    return result
+
+fun emit_block(body, parent_environment, level, function_root, loop_depth)
+    scope_name = next_scope_name()
+    result = spaces(level) + "{" + NL
+    result = result + spaces(level + 1) + "SygerEnv *" + scope_name + " = syger_env_new(" + parent_environment + ");" + NL
+    result = result + emit_statement_list(body[1], scope_name, level + 1, function_root, loop_depth)
+    result = result + spaces(level + 1) + "syger_env_free(" + scope_name + ");" + NL
+    result = result + spaces(level) + "}" + NL
+    return result
+
+fun emit_statement(node, environment_name, level, function_root, loop_depth)
+    kind = node[0]
+    prefix = spaces(level)
+    if kind == "assign"
+        return prefix + "syger_env_set(" + environment_name + ", " + c_quote(node[1]) + ", " + emit_expression(node[2], environment_name) + ");" + NL
+    if kind == "index_assign"
+        return prefix + "syger_value_assign(" + emit_lvalue(node[1], environment_name) + ", " + emit_expression(node[2], environment_name) + ");" + NL
+    if kind == "call"
+        return prefix + "syger_value_discard(" + emit_expression(node, environment_name) + ");" + NL
+    if kind == "function"
+        return prefix + "syger_env_define_function(" + environment_name + ", " + c_quote(node[1]) + ", " + to_string(length(node[2])) + ", syger_fn_" + to_string(node[4]) + ");" + NL
+    if kind == "if"
+        result = prefix + "if (syger_require_bool(" + emit_expression(node[1], environment_name) + "))" + NL
+        result = result + emit_block(node[2], environment_name, level, function_root, loop_depth)
+        if type_of(node[3]) != "none"
+            result = result + prefix + "else" + NL
+            if node[3][0] == "block"
+                result = result + emit_block(node[3], environment_name, level, function_root, loop_depth)
+            else
+                result = result + emit_block(["block", [node[3]]], environment_name, level, function_root, loop_depth)
+        return result
+    if kind == "while"
+        result = prefix + "while (syger_require_bool(" + emit_expression(node[1], environment_name) + "))" + NL
+        result = result + emit_block(node[2], environment_name, level, function_root, loop_depth + 1)
+        return result
+    if kind == "block"
+        return emit_block(node, environment_name, level, function_root, loop_depth)
+    if kind == "return"
+        if function_root == ""
+            fail("Compiler error: return outside a function.")
+        next_scope_name()
+        return_name = "syger_return_value_" + to_string(scope_counter[0])
+        result = prefix + "SygerValue " + return_name + " = " + emit_expression(node[1], environment_name) + ";" + NL
+        result = result + prefix + "syger_env_free_until(" + function_root + ", " + environment_name + ");" + NL
+        result = result + prefix + "syger_env_free(" + function_root + ");" + NL
+        result = result + prefix + "return " + return_name + ";" + NL
+        return result
+    if kind == "break"
+        if loop_depth <= 0
+            fail("Compiler error: break outside a loop.")
+        return prefix + "break;" + NL
+    if kind == "continue"
+        if loop_depth <= 0
+            fail("Compiler error: continue outside a loop.")
+        return prefix + "continue;" + NL
+    fail("Compiler error: unsupported statement " + kind)
+    return ""
+
+fun emit_function_prototype(function_node)
+    return "static SygerValue syger_fn_" + to_string(function_node[4]) + "(SygerEnv *, const SygerValue *, int);" + NL
+
+fun emit_function_definition(function_node)
+    name = "syger_fn_" + to_string(function_node[4])
+    parameters = function_node[2]
+    result = "static SygerValue " + name + "(SygerEnv *parent, const SygerValue *arguments, int argument_count)" + NL + "{" + NL
+    result = result + "    (void)arguments; (void)argument_count;" + NL
+    result = result + "    SygerEnv *env = syger_env_new_function(parent);" + NL
+    i = 0
+    while i < length(parameters)
+        result = result + "    syger_env_set_local(env, " + c_quote(parameters[i]) + ", syger_value_copy(&arguments[" + to_string(i) + "]));" + NL
+        i = i + 1
+    result = result + emit_statement_list(function_node[3][1], "env", 1, "env", 0)
+    result = result + "    syger_env_free(env);" + NL + "    return syger_value_int(0);" + NL + "}" + NL
+    return result
+
+fun emit_c(program)
+    functions = []
+    function_id_state = [0]
+    scope_counter = [0]
+    program = assign_ids(program)
+
+    quote = quote_character
+    result = "#include " + quote + "native_runtime.h" + quote + NL
+    result = result + "#include <stddef.h>" + NL + NL
+
+    i = 0
+    while i < length(functions)
+        result = result + emit_function_prototype(functions[i])
+        i = i + 1
+    result = result + NL
+
+    i = 0
+    while i < length(functions)
+        result = result + emit_function_definition(functions[i]) + NL
+        i = i + 1
+
+    result = result + "int main(int argc, char **argv)" + NL + "{" + NL
+    result = result + "    syger_runtime_set_arguments(argc, argv);" + NL
+    result = result + "    SygerEnv *env = syger_env_new(NULL);" + NL
+    result = result + emit_statement_list(program[1], "env", 1, "", 0)
+    result = result + "    syger_env_free(env);" + NL
+    result = result + "    syger_runtime_shutdown();" + NL
+    result = result + "    return 0;" + NL + "}" + NL
+    return result
+
+# Runtime character constants. chr() is needed because the current Syger string
+# syntax intentionally does not support escaped quote characters.
+quote_character = chr(34)
+NL = chr(10)
+BS = chr(92)
+digit_chars = string_chars("0123456789")
+lowercase_chars = string_chars("abcdefghijklmnopqrstuvwxyz")
+uppercase_chars = string_chars("ABCDEFGHIJKLMNOPQRSTUVWXYZ")
+
+arguments = args()
+if length(arguments) != 2
+    fail("Usage: Syger selfhost/compiler.sg <input.sg> <output.c>")
+source_path = arguments[0]
+output_path = arguments[1]
+source_text = read_file(source_path)
+scanned_tokens = scan_tokens(source_text)
+parser_tokens = scanned_tokens
+parser_state = [0, ["EOF", "", 1]]
+parsed_program = parse_program()
+generated_c = emit_c(parsed_program)
+if not write_file(output_path, generated_c)
+    fail("Could not write generated C file: " + output_path)
+print("Generated C source: " + output_path)
