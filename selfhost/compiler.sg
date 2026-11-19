@@ -3,6 +3,93 @@
 # The bootstrap interpreter is used for stage0; the generated compiler can then
 # compile this same file again for stage1/stage2 bootstrap verification.
 
+# ---- error reporting -------------------------------------------------------
+# Errors use the same format as the interpreter and the native runtime.
+
+fun repeat_text(text, count)
+    result = ""
+    i = 0
+    while i < count
+        result = result + text
+        i = i + 1
+    return result
+
+fun source_line_text(line)
+    current = 1
+    i = 0
+    n = length(source_text)
+    while i < n and current < line
+        if char_at(source_text, i) == NL
+            current = current + 1
+        i = i + 1
+    start = i
+    while i < n and char_at(source_text, i) != NL and char_at(source_text, i) != chr(13)
+        i = i + 1
+    return substring(source_text, start, i)
+
+fun compile_error(code, line, message, help)
+    if length(message) > 0 and char_at(message, length(message) - 1) == "."
+        message = substring(message, 0, length(message) - 1)
+    eprint("error[" + code + "]: " + message)
+    pad = repeat_text(" ", length(to_string(line)))
+    if line > 0
+        eprint(pad + "--> " + source_path + ":" + to_string(line))
+        eprint(pad + " |")
+        eprint(to_string(line) + " | " + source_line_text(line))
+        eprint(pad + " |")
+    if help != ""
+        eprint(pad + " = help: " + help)
+    exit(1)
+    return none
+
+fun edit_distance(a, b)
+    if length(a) > 40 or length(b) > 40
+        return 1000
+    previous = []
+    j = 0
+    while j <= length(b)
+        append(previous, j)
+        j = j + 1
+    i = 1
+    while i <= length(a)
+        current = [i]
+        j = 1
+        while j <= length(b)
+            cost = 1
+            if char_at(a, i - 1) == char_at(b, j - 1)
+                cost = 0
+            best = previous[j - 1] + cost
+            if previous[j] + 1 < best
+                best = previous[j] + 1
+            if current[j - 1] + 1 < best
+                best = current[j - 1] + 1
+            append(current, best)
+            j = j + 1
+        previous = current
+        i = i + 1
+    return previous[length(b)]
+
+fun suggestion(name, candidates, fallback)
+    limit = 3
+    if length(name) <= 3
+        limit = 1
+    elif length(name) <= 6
+        limit = 2
+    best = ""
+    best_distance = limit + 1
+    i = 0
+    while i < length(candidates)
+        candidate = candidates[i]
+        if candidate != name
+            distance = edit_distance(name, candidate)
+            if distance < best_distance
+                best = candidate
+                best_distance = distance
+        i = i + 1
+    if best == ""
+        return fallback
+    return "did you mean '" + best + "'?"
+
 fun string_chars(text)
     result = []
     i = 0
@@ -88,7 +175,7 @@ fun scan_tokens(source)
                     append(tokens, ["DEDENT", "", state[2]])
                     current_indent = state[4][length(state[4]) - 1]
                 if indentation != current_indent
-                    fail("Lexer error: inconsistent indentation on line " + to_string(state[2]))
+                    compile_error("E1002", state[2], "inconsistent indentation", "use the same number of spaces as the block this line belongs to")
             state[3] = false
 
         character = char_at(state[0], state[1])
@@ -115,7 +202,7 @@ fun scan_tokens(source)
                     state[2] = state[2] + 1
                 state[1] = state[1] + 1
             if char_at(state[0], state[1]) != quote_character
-                fail("Lexer error: unterminated string on line " + to_string(start_line))
+                compile_error("E1003", start_line, "unterminated string", "close the string with a matching " + quote_character)
             string_value = substring(state[0], string_start, state[1])
             state[1] = state[1] + 1
             append(tokens, ["STRING", string_value, start_line])
@@ -148,7 +235,7 @@ fun scan_tokens(source)
                 append(tokens, ["BANG_EQUAL", "!=", start_line])
                 state[1] = state[1] + 2
                 continue
-            fail("Lexer error: unexpected '!' on line " + to_string(start_line))
+            compile_error("E1004", start_line, "unexpected character '!'", "use 'not' to negate a boolean, or '!=' to compare")
         if character == "<"
             if next_character == "="
                 append(tokens, ["LESS_EQUAL", "<=", start_line])
@@ -187,7 +274,7 @@ fun scan_tokens(source)
         elif character == "]"
             append(tokens, ["RIGHT_BRACKET", character, start_line])
         else
-            fail("Lexer error: invalid character on line " + to_string(start_line) + ": " + character)
+            compile_error("E1005", start_line, "unexpected character '" + character + "'", "")
         state[1] = state[1] + 1
 
     while length(state[4]) > 1
@@ -215,9 +302,16 @@ fun match_token(kind)
         return true
     return false
 
+fun parse_error(message)
+    line = current_token()[2]
+    if current_type() == "EOF" or current_type() == "INDENT" or current_type() == "DEDENT"
+        line = parser_state[1][2]
+    compile_error("E2001", line, message, "")
+    return none
+
 fun consume_token(kind, message)
     if current_type() != kind
-        fail("Parser error on line " + to_string(current_token()[2]) + ": " + message)
+        parse_error(message)
     return advance_token()
 
 fun parse_array_literal()
@@ -230,7 +324,7 @@ fun parse_array_literal()
     consume_token("RIGHT_BRACKET", "Expected ']' after array elements.")
     return ["array", elements]
 
-fun parse_call(name)
+fun parse_call(name, line)
     consume_token("LEFT_PAREN", "Expected '(' after function name.")
     arguments = []
     if current_type() != "RIGHT_PAREN"
@@ -239,7 +333,7 @@ fun parse_call(name)
             if not match_token("COMMA")
                 break
     consume_token("RIGHT_PAREN", "Expected ')' after function arguments.")
-    return ["call", name, arguments]
+    return ["call", name, arguments, line]
 
 fun parse_postfix(node)
     while match_token("LEFT_BRACKET")
@@ -280,11 +374,11 @@ fun parse_primary()
     if current_type() == "IDENTIFIER"
         token = advance_token()
         if current_type() == "LEFT_PAREN"
-            node = parse_call(token[1])
+            node = parse_call(token[1], token[2])
         else
-            node = ["variable", token[1]]
+            node = ["variable", token[1], token[2]]
         return parse_postfix(node)
-    fail("Parser error on line " + to_string(current_token()[2]) + ": expected expression.")
+    parse_error("Expected an expression.")
     return ["none"]
 
 fun parse_multiplication()
@@ -343,9 +437,10 @@ fun parse_block()
 
 fun parse_optional_else()
     if match_token("ELIF")
+        line = parser_state[1][2]
         condition = parse_expression()
         body = parse_block()
-        return ["if", condition, body, parse_optional_else()]
+        return ["if", condition, body, parse_optional_else(), line]
     if match_token("ELSE")
         return parse_block()
     return none
@@ -369,7 +464,14 @@ fun parse_function_after_keyword()
     body = parse_block()
     return ["function", name_token[1], parameters, body]
 
+# Every statement node ends with the line it starts on.
 fun parse_statement()
+    line = current_token()[2]
+    node = parse_statement_node()
+    append(node, line)
+    return node
+
+fun parse_statement_node()
     if match_token("FUNCTION")
         return parse_function_after_keyword()
     if match_token("IF")
@@ -385,17 +487,17 @@ fun parse_statement()
         return ["continue"]
 
     if current_type() != "IDENTIFIER"
-        fail("Parser error on line " + to_string(current_token()[2]) + ": expected statement.")
+        parse_error("Expected a statement.")
     name_token = advance_token()
     if match_token("EQUAL")
         return ["assign", name_token[1], parse_expression()]
     if current_type() == "LEFT_PAREN"
-        return parse_call(name_token[1])
+        return parse_call(name_token[1], name_token[2])
     if current_type() == "LEFT_BRACKET"
-        lvalue = parse_postfix(["variable", name_token[1]])
+        lvalue = parse_postfix(["variable", name_token[1], name_token[2]])
         consume_token("EQUAL", "Expected '=' after indexed array expression.")
         return ["index_assign", lvalue, parse_expression()]
-    fail("Parser error on line " + to_string(current_token()[2]) + ": expected '=' or function call.")
+    parse_error("Expected '=' or '(' after identifier.")
     return ["none"]
 
 fun parse_program()
@@ -466,7 +568,7 @@ fun collect_functions(statements)
         kind = node[0]
         if kind == "function"
             if contains(function_names, node[1])
-                fail("Compile error: function '" + node[1] + "' is defined more than once.")
+                compile_error("E3006", node[4], "function '" + node[1] + "' is defined more than once", "rename one of the functions")
             append(function_names, node[1])
             append(function_nodes, node)
             collect_functions(node[3][1])
@@ -536,8 +638,23 @@ fun lookup_local(name)
 fun is_global(name)
     return contains(global_names, name)
 
+fun visible_names()
+    names = []
+    k = 0
+    while k < length(scope_names)
+        i = 0
+        while i < length(scope_names[k])
+            append(names, scope_names[k][i])
+            i = i + 1
+        k = k + 1
+    i = 0
+    while i < length(global_names)
+        append(names, global_names[i])
+        i = i + 1
+    return names
+
 fun undefined_variable(name)
-    fail("Compile error: variable '" + name + "' is not defined.")
+    compile_error("E3001", error_line[0], "variable '" + name + "' is not defined", suggestion(name, visible_names(), "assign a value to it first, e.g. " + name + " = 0"))
     return ""
 
 fun emit_variable_read(name)
@@ -679,19 +796,28 @@ fun binary_function(operator)
     fail("Compile error: unsupported operator " + operator)
     return ""
 
+fun arity_help(name)
+    function_index = index_of(function_names, name)
+    if function_index < 0
+        return ""
+    return "'" + name + "' is defined as " + name + "(" + join(function_nodes[function_index][2], ", ") + ")"
+
 fun check_arity(name, expected, actual)
     if expected != actual
-        fail("Compile error: " + name + " expects " + to_string(expected) + " argument(s), got " + to_string(actual) + ".")
+        label = name
+        if contains(function_names, name) and not contains(builtin_names, name)
+            label = "function '" + name + "'"
+        compile_error("E3003", error_line[0], label + " expects " + to_string(expected) + " argument(s), got " + to_string(actual), arity_help(name))
     return none
 
 fun emit_call(node)
     name = node[1]
     arguments = node[2]
-    if name == "print"
+    if name == "print" or name == "eprint"
         result = "({ "
         i = 0
         while i < length(arguments)
-            result = result + "syger_b_print(" + emit_expression(arguments[i]) + "); "
+            result = result + "syger_b_" + name + "(" + emit_expression(arguments[i]) + "); "
             i = i + 1
         return result + "syger_int(0); })"
     builtin = index_of(builtin_names, name)
@@ -700,7 +826,7 @@ fun emit_call(node)
         if contains(mutator_names, name)
             target = arguments[0]
             if not is_lvalue(target)
-                fail("Compile error: " + name + " needs a variable or indexed variable as its first argument.")
+                compile_error("E3010", error_line[0], name + " needs a variable or indexed variable as its first argument", "store the array in a variable first, e.g. items = ...; " + name + "(items, ...)")
             rest = slice(arguments, 1, length(arguments))
             values = emit_sequenced(rest, true)
             indexes = emit_sequenced(lvalue_indexes(target), false)
@@ -714,7 +840,12 @@ fun emit_call(node)
         return wrap_sequenced(sequenced[0], "syger_b_" + name + "(" + join_codes(sequenced[1]) + ")")
     function_index = index_of(function_names, name)
     if function_index < 0
-        fail("Compile error: function '" + name + "' is not defined.")
+        all_functions = slice(builtin_names, 0, length(builtin_names))
+        i = 0
+        while i < length(function_names)
+            append(all_functions, function_names[i])
+            i = i + 1
+        compile_error("E3002", error_line[0], "function '" + name + "' is not defined", suggestion(name, all_functions, "define it with: fun " + name + "(parameters)"))
     check_arity(name, length(function_nodes[function_index][2]), length(arguments))
     sequenced = emit_sequenced(arguments, false)
     return wrap_sequenced(sequenced[0], "f_" + name + "(" + join_codes(sequenced[1]) + ")")
@@ -732,6 +863,7 @@ fun emit_expression(node)
     if kind == "none"
         return "syger_none()"
     if kind == "variable"
+        error_line[0] = node[2]
         return emit_variable_read(node[1])
     if kind == "array"
         elements = node[1]
@@ -746,6 +878,7 @@ fun emit_expression(node)
         sequenced = emit_sequenced([node[1], node[2]], true)
         return wrap_sequenced(sequenced[0], "syger_index(" + join_codes(sequenced[1]) + ")")
     if kind == "call"
+        error_line[0] = node[3]
         return emit_call(node)
     if kind == "unary"
         if node[1] == "not"
@@ -754,9 +887,9 @@ fun emit_expression(node)
     if kind == "binary"
         operator = node[1]
         if operator == "and"
-            return "syger_bool(syger_truth(" + emit_expression(node[2]) + ") && syger_truth(" + emit_expression(node[3]) + "))"
+            return "syger_bool(syger_logic_operand(" + emit_expression(node[2]) + ", " + quote_character + "and" + quote_character + ") && syger_logic_operand(" + emit_expression(node[3]) + ", " + quote_character + "and" + quote_character + "))"
         if operator == "or"
-            return "syger_bool(syger_truth(" + emit_expression(node[2]) + ") || syger_truth(" + emit_expression(node[3]) + "))"
+            return "syger_bool(syger_logic_operand(" + emit_expression(node[2]) + ", " + quote_character + "or" + quote_character + ") || syger_logic_operand(" + emit_expression(node[3]) + ", " + quote_character + "or" + quote_character + "))"
         sequenced = emit_sequenced([node[2], node[3]], false)
         return wrap_sequenced(sequenced[0], binary_function(operator) + "(" + join_codes(sequenced[1]) + ")")
     fail("Compile error: unknown expression node " + kind)
@@ -804,7 +937,9 @@ fun emit_block(statements, level, is_loop)
     return spaces(level) + "{" + NL + body + spaces(level) + "}" + NL
 
 fun emit_if(node, level)
-    result = spaces(level) + "if (syger_truth(" + emit_expression(node[1]) + "))" + NL
+    error_line[0] = node[4]
+    result = line_marker(node[4], spaces(level))
+    result = result + spaces(level) + "if (syger_truth(" + emit_expression(node[1]) + "))" + NL
     result = result + emit_block(node[2][1], level, false)
     other = node[3]
     if type_of(other) != "none"
@@ -815,7 +950,21 @@ fun emit_if(node, level)
             result = result + spaces(level) + "{" + NL + emit_if(other, level + 1) + spaces(level) + "}" + NL
     return result
 
+fun line_marker(line, prefix)
+    return prefix + "syger_line = " + to_string(line) + ";" + NL
+
 fun emit_statement(node, level)
+    kind = node[0]
+    prefix = spaces(level)
+    if kind == "block"
+        return emit_block(node[1], level, false)
+    line = node[length(node) - 1]
+    error_line[0] = line
+    if kind == "assign" or kind == "index_assign" or kind == "call" or kind == "return"
+        return line_marker(line, prefix) + emit_statement_body(node, level)
+    return emit_statement_body(node, level)
+
+fun emit_statement_body(node, level)
     kind = node[0]
     prefix = spaces(level)
     if kind == "assign"
@@ -829,22 +978,23 @@ fun emit_statement(node, level)
     if kind == "if"
         return emit_if(node, level)
     if kind == "while"
-        result = prefix + "while (syger_truth(" + emit_expression(node[1]) + "))" + NL
+        result = prefix + "while ((syger_line = " + to_string(node[3]) + "), syger_truth(" + emit_expression(node[1]) + "))" + NL
         return result + emit_block(node[2][1], level, true)
     if kind == "block"
         return emit_block(node[1], level, false)
     if kind == "return"
         if not in_function[0]
-            fail("Compile error: return outside a function.")
+            compile_error("E3005", error_line[0], "return outside a function", "return can only be used inside a fun block")
         temp = fresh_name("r")
         result = prefix + "{" + NL
         result = result + prefix + "    SygerValue " + temp + " = " + emit_expression(node[1]) + ";" + NL
         result = result + emit_releases_until(0, level + 1)
+        result = result + prefix + "    syger_leave();" + NL
         return result + prefix + "    return " + temp + ";" + NL + prefix + "}" + NL
     if kind == "break" or kind == "continue"
         loop_scope = innermost_loop_scope()
         if loop_scope < 0
-            fail("Compile error: " + kind + " outside a loop.")
+            compile_error("E3004", error_line[0], "break or continue outside a loop", "break and continue can only be used inside a while loop")
         return prefix + "{" + NL + emit_releases_until(loop_scope, level + 1) + prefix + "    " + kind + ";" + NL + prefix + "}" + NL
     fail("Compile error: unsupported statement " + kind)
     return ""
@@ -875,8 +1025,10 @@ fun emit_function(node)
     in_function[0] = true
     push_scope(false)
     result = emit_signature(node) + NL + "{" + NL
+    result = result + "    syger_enter(" + c_quote(node[1]) + ");" + NL
     result = result + emit_statement_list(node[3][1], 1)
     result = result + emit_releases_until(0, 1)
+    result = result + "    syger_leave();" + NL
     result = result + "    return syger_int(0);" + NL + "}" + NL + NL
     pop_scope()
     return result
@@ -939,6 +1091,7 @@ fun emit_c(program)
     result = result + function_code
     result = result + "int main(int argc, char **argv)" + NL + "{" + NL
     result = result + "    syger_runtime_set_arguments(argc, argv);" + NL
+    result = result + "    syger_source_path = " + c_quote(source_path) + ";" + NL
     result = result + "    syger_init_literals();" + NL
     result = result + main_code
     result = result + "    syger_runtime_shutdown();" + NL
@@ -958,8 +1111,8 @@ digit_chars = string_chars("0123456789")
 lowercase_chars = string_chars("abcdefghijklmnopqrstuvwxyz")
 uppercase_chars = string_chars("ABCDEFGHIJKLMNOPQRSTUVWXYZ")
 
-builtin_names = ["print", "type_of", "fail", "args", "read_file", "write_file", "char_at", "substring", "chr", "to_string", "length", "token_at", "contains", "index_of", "slice", "join", "sum", "min", "max", "first", "last", "append", "pop", "insert", "remove", "clear", "reverse", "sort"]
-builtin_arities = [-1, 1, 1, 0, 1, 2, 2, 3, 1, 1, 1, 2, 2, 2, 3, 2, 1, 1, 1, 1, 1, 2, 1, 3, 2, 1, 1, 1]
+builtin_names = ["eprint", "exit", "print", "type_of", "fail", "args", "read_file", "write_file", "char_at", "substring", "chr", "to_string", "length", "token_at", "contains", "index_of", "slice", "join", "sum", "min", "max", "first", "last", "append", "pop", "insert", "remove", "clear", "reverse", "sort"]
+builtin_arities = [-1, 1, -1, 1, 1, 0, 1, 2, 2, 3, 1, 1, 1, 2, 2, 2, 3, 2, 1, 1, 1, 1, 1, 2, 1, 3, 2, 1, 1, 1]
 mutator_names = ["append", "pop", "insert", "remove", "clear", "reverse", "sort"]
 
 # Compiler state (mutated in place by the code generator).
@@ -973,10 +1126,12 @@ scope_names = []
 scope_cnames = []
 scope_is_loop = []
 in_function = [false]
+error_line = [0]
 
 arguments = args()
 if length(arguments) != 2
-    fail("Usage: Syger selfhost/compiler.sg <input.sg> <output.c>")
+    eprint("usage: Syger selfhost/compiler.sg <input.sg> <output.c>")
+    exit(2)
 source_path = arguments[0]
 output_path = arguments[1]
 source_text = read_file(source_path)
@@ -986,5 +1141,6 @@ parser_state = [0, ["EOF", "", 1]]
 parsed_program = parse_program()
 generated_c = emit_c(parsed_program)
 if not write_file(output_path, generated_c)
-    fail("Could not write generated C file: " + output_path)
+    eprint("error: could not write generated C file: " + output_path)
+    exit(1)
 print("Generated C source: " + output_path)

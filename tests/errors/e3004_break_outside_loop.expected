@@ -1,0 +1,6 @@
+error[E3004]: break or continue outside a loop
+ --> tests/errors/e3004_break_outside_loop.sg:2
+  |
+2 | break
+  |
+  = help: break and continue can only be used inside a while loop

@@ -1,0 +1,5 @@
+error[E3008]: indexing requires an array (got integer)
+ --> tests/errors/e3008_index_non_array.sg:2
+  |
+2 | print(count[0])
+  |

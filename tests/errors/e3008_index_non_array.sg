@@ -1,0 +1,2 @@
+count = 5
+print(count[0])

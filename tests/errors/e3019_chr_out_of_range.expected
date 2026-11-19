@@ -1,0 +1,6 @@
+error[E3019]: chr code 300 is out of range
+ --> tests/errors/e3019_chr_out_of_range.sg:1
+  |
+1 | print(chr(300))
+  |
+  = help: chr supports ASCII codes 0 through 127

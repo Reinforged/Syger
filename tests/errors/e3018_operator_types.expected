@@ -1,0 +1,6 @@
+error[E3018]: cannot use '+' on string and integer
+ --> tests/errors/e3018_operator_types.sg:3
+  |
+3 | print(name + version)
+  |
+  = help: convert the other value first, e.g. "total: " + to_string(count)

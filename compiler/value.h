@@ -2,6 +2,7 @@
 #define SYGER_VALUE_H
 
 #include <stddef.h>
+#include <stdio.h>
 
 typedef enum {
     VALUE_STRING,
@@ -66,5 +67,9 @@ void value_array_reserve(Value *array, int needed);
 
 void value_free(Value *value);
 void value_print(const Value *value);
+void value_fprint(FILE *out, const Value *value);
+
+/* The text print() would show, without the newline; caller frees it. */
+char *value_to_text(const Value *value);
 
 #endif

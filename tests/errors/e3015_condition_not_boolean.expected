@@ -1,0 +1,5 @@
+error[E3015]: condition must be a boolean (got integer)
+ --> tests/errors/e3015_condition_not_boolean.sg:2
+  |
+2 | if count
+  |

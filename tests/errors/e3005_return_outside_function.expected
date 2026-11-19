@@ -1,0 +1,6 @@
+error[E3005]: return outside a function
+ --> tests/errors/e3005_return_outside_function.sg:2
+  |
+2 | return 5
+  |
+  = help: return can only be used inside a fun block

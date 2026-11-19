@@ -253,6 +253,11 @@ static void define_function(
 {
     Function *function = find_function(environment, name);
 
+    if (function != NULL && function->body != body)
+    {
+        diagnostics_runtime_errorf("E3006", "rename one of the functions", "function '%s' is defined more than once", name);
+    }
+
     if (function != NULL)
     {
         function->parameters = parameters;
@@ -284,6 +289,248 @@ static void define_function(
     environment->function_count++;
 }
 
+static const char *value_type_name(ValueType type)
+{
+    switch (type)
+    {
+        case VALUE_STRING: return "string";
+        case VALUE_INT: return "integer";
+        case VALUE_BOOL: return "boolean";
+        case VALUE_NONE: return "none";
+        case VALUE_ARRAY: return "array";
+    }
+
+    return "value";
+}
+
+static const char *operator_symbol(TokenType operator)
+{
+    switch (operator)
+    {
+        case TOKEN_PLUS: return "+";
+        case TOKEN_MINUS: return "-";
+        case TOKEN_STAR: return "*";
+        case TOKEN_SLASH: return "/";
+        case TOKEN_PERCENT: return "%";
+        case TOKEN_LESS: return "<";
+        case TOKEN_LESS_EQUAL: return "<=";
+        case TOKEN_GREATER: return ">";
+        case TOKEN_GREATER_EQUAL: return ">=";
+        case TOKEN_EQUAL_EQUAL: return "==";
+        case TOKEN_BANG_EQUAL: return "!=";
+        default: return "?";
+    }
+}
+
+_Noreturn static void operand_type_error(
+    const char *code,
+    TokenType operator,
+    ValueType left,
+    ValueType right
+)
+{
+    const char *help = "arithmetic and comparisons like < need two integers";
+
+    if (operator == TOKEN_PLUS && (left == VALUE_STRING || right == VALUE_STRING))
+    {
+        help = left == right
+            ? "+ joins two strings"
+            : "convert the other value first, e.g. \"total: \" + to_string(count)";
+    }
+    else if (operator == TOKEN_PLUS)
+    {
+        help = "+ adds two integers or joins two strings";
+    }
+
+    diagnostics_runtime_errorf(
+        code,
+        help,
+        "cannot use '%s' on %s and %s",
+        operator_symbol(operator),
+        value_type_name(left),
+        value_type_name(right)
+    );
+}
+
+_Noreturn static void index_error(long index, int count)
+{
+    char help[128];
+
+    if (count == 0)
+    {
+        snprintf(help, sizeof(help), "the array is empty");
+    }
+    else
+    {
+        snprintf(help, sizeof(help), "valid indexes are 0 to %d", count - 1);
+    }
+
+    diagnostics_runtime_errorf(
+        "E3007",
+        help,
+        "index %ld is out of bounds for an array of length %d",
+        index,
+        count
+    );
+}
+
+/* Usage strings for builtins, shown when they get the wrong arguments. */
+static const char *const builtin_usages[][2] = {
+    {"print", "print(value, ...)"}, {"eprint", "eprint(value, ...)"},
+    {"length", "length(text_or_array)"}, {"append", "append(array, value)"},
+    {"pop", "pop(array)"}, {"insert", "insert(array, index, value)"},
+    {"remove", "remove(array, index)"}, {"contains", "contains(array, value)"},
+    {"index_of", "index_of(array, value)"}, {"clear", "clear(array)"},
+    {"reverse", "reverse(array)"}, {"sort", "sort(array)"},
+    {"slice", "slice(array, start, end)"}, {"join", "join(array, separator)"},
+    {"sum", "sum(array)"}, {"min", "min(array)"}, {"max", "max(array)"},
+    {"first", "first(array)"}, {"last", "last(array)"}, {"args", "args()"},
+    {"token_at", "token_at(array, index)"}, {"type_of", "type_of(value)"},
+    {"fail", "fail(message)"}, {"to_string", "to_string(value)"},
+    {"chr", "chr(code)"}, {"read_file", "read_file(path)"},
+    {"write_file", "write_file(path, text)"}, {"char_at", "char_at(text, index)"},
+    {"substring", "substring(text, start, end)"}, {"exit", "exit(code)"}
+};
+
+static const char *builtin_usage(const char *name)
+{
+    for (size_t i = 0; i < sizeof(builtin_usages) / sizeof(builtin_usages[0]); i++)
+    {
+        if (strcmp(builtin_usages[i][0], name) == 0)
+        {
+            return builtin_usages[i][1];
+        }
+    }
+
+    return name;
+}
+
+static void check_builtin_arity(AstNode *node, int expected)
+{
+    if (node->call.argument_count != expected)
+    {
+        char help[160];
+        snprintf(help, sizeof(help), "usage: %s", builtin_usage(node->call.name));
+        diagnostics_runtime_errorf(
+            "E3003",
+            help,
+            "%s expects %d argument(s), got %d",
+            node->call.name,
+            expected,
+            node->call.argument_count
+        );
+    }
+}
+
+/* ---- error help texts ----------------------------------------------------- */
+
+static const char *const builtin_function_names[] = {
+    "print", "length", "append", "pop", "insert", "remove", "contains",
+    "index_of", "clear", "reverse", "sort", "slice", "join", "sum", "min",
+    "max", "first", "last", "args", "token_at", "type_of", "fail",
+    "to_string", "chr", "read_file", "write_file", "char_at", "substring",
+    "eprint", "exit"
+};
+
+#define MAX_SUGGESTION_CANDIDATES 1024
+
+static char help_buffer[512];
+
+static const char *suggestion_help(
+    const char *name,
+    const char **candidates,
+    int count,
+    const char *fallback
+)
+{
+    const char *closest = diagnostics_closest_name(name, candidates, count);
+
+    if (closest == NULL)
+    {
+        return fallback;
+    }
+
+    snprintf(help_buffer, sizeof(help_buffer), "did you mean '%s'?", closest);
+    return help_buffer;
+}
+
+static const char *undefined_variable_help(
+    Environment *environment,
+    const char *name
+)
+{
+    const char *candidates[MAX_SUGGESTION_CANDIDATES];
+    int count = 0;
+
+    for (Environment *current = environment;
+         current != NULL && count < MAX_SUGGESTION_CANDIDATES;
+         current = current->parent)
+    {
+        for (int i = 0; i < current->count && count < MAX_SUGGESTION_CANDIDATES; i++)
+        {
+            candidates[count++] = current->variables[i].name;
+        }
+    }
+
+    return suggestion_help(
+        name,
+        candidates,
+        count,
+        "assign a value to it first, e.g. name = 0"
+    );
+}
+
+static const char *undefined_function_help(
+    Environment *environment,
+    const char *name
+)
+{
+    const char *candidates[MAX_SUGGESTION_CANDIDATES];
+    int count = 0;
+
+    for (Environment *current = environment;
+         current != NULL && count < MAX_SUGGESTION_CANDIDATES;
+         current = current->parent)
+    {
+        for (int i = 0; i < current->function_count && count < MAX_SUGGESTION_CANDIDATES; i++)
+        {
+            candidates[count++] = current->functions[i].name;
+        }
+    }
+
+    for (size_t i = 0;
+         i < sizeof(builtin_function_names) / sizeof(builtin_function_names[0]) &&
+         count < MAX_SUGGESTION_CANDIDATES;
+         i++)
+    {
+        candidates[count++] = builtin_function_names[i];
+    }
+
+    return suggestion_help(
+        name,
+        candidates,
+        count,
+        "define it with: fun name(parameters)"
+    );
+}
+
+static const char *function_signature_help(const Function *function)
+{
+    size_t used = (size_t)snprintf(help_buffer, sizeof(help_buffer), "'%s' is defined as %s(", function->name, function->name);
+
+    for (int i = 0; i < function->parameter_count && used < sizeof(help_buffer); i++)
+    {
+        used += (size_t)snprintf(help_buffer + used, sizeof(help_buffer) - used, "%s%s", i ? ", " : "", function->parameters[i]);
+    }
+
+    if (used < sizeof(help_buffer))
+    {
+        snprintf(help_buffer + used, sizeof(help_buffer) - used, ")");
+    }
+
+    return help_buffer;
+}
+
 static ExecutionResult execute(
     AstNode *node,
     Environment *environment
@@ -309,7 +556,7 @@ static Value *resolve_array_element(
 
         if (variable == NULL)
         {
-            diagnostics_runtime_errorf("E3001", "Define the variable before using it.", "variable '%s' is not defined.", node->variable_reference.name);
+            diagnostics_runtime_errorf("E3001", undefined_variable_help(environment, node->variable_reference.name), "variable '%s' is not defined", node->variable_reference.name);
         }
 
         return &variable->value;
@@ -328,19 +575,18 @@ static Value *resolve_array_element(
         if (array->type != VALUE_ARRAY)
         {
             value_free(&index);
-            diagnostics_runtime_errorf("E3005", "Index only an array value.", "indexing requires an array.\n");
+            diagnostics_runtime_errorf("E3008", NULL, "indexing requires an array (got %s)", value_type_name(array->type));
         }
 
         if (index.type != VALUE_INT)
         {
             value_free(&index);
-            diagnostics_runtime_errorf("E3006", "Use an integer array index.", "array index must be an integer.\n");
+            diagnostics_runtime_errorf("E3009", NULL, "array index must be an integer (got %s)", value_type_name(index.type));
         }
 
         if (index.integer < 0 || index.integer >= array->array.count)
         {
-            value_free(&index);
-            diagnostics_runtime_errorf("E3007", "Use an index within the array bounds.", "array index out of bounds.\n");
+            index_error(index.integer, array->array.count);
         }
 
         if (mutable)
@@ -353,7 +599,7 @@ static Value *resolve_array_element(
         return element;
     }
 
-    diagnostics_runtime_errorf("E3009", "Pass an array value.", "array assignment requires an array expression.\n");
+    diagnostics_runtime_errorf("E3011", "Pass an array value.", "array assignment requires an array expression.\n");
 }
 
 static int value_equals(const Value *left, const Value *right)
@@ -409,14 +655,14 @@ static Value *require_array_argument(
     if (node->type != AST_VARIABLE_REFERENCE &&
         node->type != AST_INDEX)
     {
-        diagnostics_runtime_errorf("E3008", "Pass an array variable or an indexed array.", "%s requires an array variable or indexed array.", name);
+        diagnostics_runtime_errorf("E3010", "store the array in a variable first, then pass the variable", "%s needs a variable or indexed variable as its first argument", name);
     }
 
     Value *value = resolve_array_element(node, environment, 1);
 
     if (value->type != VALUE_ARRAY)
     {
-        diagnostics_runtime_errorf("E3009", "Pass an array value.", "%s requires an array.", name);
+        diagnostics_runtime_errorf("E3011", "Pass an array value.", "%s requires an array.", name);
     }
 
     value_array_make_unique(value);
@@ -431,7 +677,7 @@ static long require_integer_value(
 {
     if (value->type != VALUE_INT)
     {
-        diagnostics_runtime_errorf("E3010", "Pass an integer index.", "%s requires an integer index.", name
+        diagnostics_runtime_errorf("E3011", "Pass an integer index.", "%s requires an integer index.", name
         );
         value_free(value);
     }
@@ -450,7 +696,7 @@ static void check_array_index(
 
     if (index < 0 || index > upper)
     {
-        diagnostics_runtime_errorf("E3011", "Use an index within the valid range.", "%s index out of bounds.", name);
+        diagnostics_runtime_errorf("E3007", "Use an index within the valid range.", "%s index out of bounds.", name);
     }
 }
 
@@ -463,10 +709,7 @@ static Value evaluate_array_builtin(
 
     if (strcmp(name, "length") == 0)
     {
-        if (node->call.argument_count != 1)
-        {
-            diagnostics_runtime_errorf("E3003", "Pass the required number of arguments.", "length expects 1 argument.\n");
-        }
+        check_builtin_arity(node, 1);
 
         AstNode *argument = node->call.arguments[0];
         if (argument->type == AST_VARIABLE_REFERENCE || argument->type == AST_INDEX)
@@ -474,7 +717,7 @@ static Value evaluate_array_builtin(
             Value *value = resolve_array_element(argument, environment, 0);
             if (value->type == VALUE_ARRAY) return value_int(value->array.count);
             if (value->type == VALUE_STRING) return value_int((long)value_string_length(value));
-            diagnostics_runtime_errorf("E3009", "Pass an array value.", "length requires an array or string.\n");
+            diagnostics_runtime_errorf("E3011", NULL, "length requires a string or array (got %s)", value_type_name(value->type));
         }
 
         Value value = evaluate(argument, environment);
@@ -491,15 +734,12 @@ static Value evaluate_array_builtin(
             return value_int((long)count);
         }
         value_free(&value);
-        diagnostics_runtime_errorf("E3009", "Pass an array value.", "length requires an array or string.\n");
+        diagnostics_runtime_errorf("E3011", NULL, "length requires a string or array (got %s)", value_type_name(value.type));
     }
 
     if (strcmp(name, "append") == 0)
     {
-        if (node->call.argument_count != 2)
-        {
-            diagnostics_runtime_errorf("E3003", "Pass the required number of arguments.", "append expects 2 arguments.\n");
-        }
+        check_builtin_arity(node, 2);
 
         Value *array = require_array_argument(
             node->call.arguments[0],
@@ -518,10 +758,7 @@ static Value evaluate_array_builtin(
 
     if (strcmp(name, "pop") == 0)
     {
-        if (node->call.argument_count != 1)
-        {
-            diagnostics_runtime_errorf("E3003", "Pass the required number of arguments.", "pop expects 1 argument.\n");
-        }
+        check_builtin_arity(node, 1);
 
         Value *array = require_array_argument(
             node->call.arguments[0],
@@ -531,7 +768,7 @@ static Value evaluate_array_builtin(
 
         if (array->array.count == 0)
         {
-            diagnostics_runtime_errorf("E3012", "Check that the array is not empty first.", "pop cannot remove from an empty array.\n");
+            diagnostics_runtime_errorf("E3012", "check length(array) > 0 first", "pop cannot remove from an empty array.\n");
         }
 
         value_array_make_unique(array);
@@ -544,10 +781,7 @@ static Value evaluate_array_builtin(
 
     if (strcmp(name, "insert") == 0)
     {
-        if (node->call.argument_count != 3)
-        {
-            diagnostics_runtime_errorf("E3003", "Pass the required number of arguments.", "insert expects 3 arguments.\n");
-        }
+        check_builtin_arity(node, 3);
 
         Value *array = require_array_argument(
             node->call.arguments[0],
@@ -576,10 +810,7 @@ static Value evaluate_array_builtin(
 
     if (strcmp(name, "remove") == 0)
     {
-        if (node->call.argument_count != 2)
-        {
-            diagnostics_runtime_errorf("E3003", "Pass the required number of arguments.", "remove expects 2 arguments.\n");
-        }
+        check_builtin_arity(node, 2);
 
         Value *array = require_array_argument(
             node->call.arguments[0],
@@ -606,10 +837,7 @@ static Value evaluate_array_builtin(
 
     if (strcmp(name, "contains") == 0)
     {
-        if (node->call.argument_count != 2)
-        {
-            diagnostics_runtime_errorf("E3003", "Pass the required number of arguments.", "contains expects 2 arguments.\n");
-        }
+        check_builtin_arity(node, 2);
 
         Value array = evaluate(node->call.arguments[0], environment);
         Value value = evaluate(node->call.arguments[1], environment);
@@ -618,7 +846,7 @@ static Value evaluate_array_builtin(
         {
             value_free(&array);
             value_free(&value);
-            diagnostics_runtime_errorf("E3009", "Pass an array value.", "contains requires an array.\n");
+            diagnostics_runtime_errorf("E3011", "Pass an array value.", "contains requires an array.\n");
         }
 
         int found = 0;
@@ -639,10 +867,7 @@ static Value evaluate_array_builtin(
 
     if (strcmp(name, "index_of") == 0)
     {
-        if (node->call.argument_count != 2)
-        {
-            diagnostics_runtime_errorf("E3003", "Pass the required number of arguments.", "index_of expects 2 arguments.\n");
-        }
+        check_builtin_arity(node, 2);
 
         Value array = evaluate(node->call.arguments[0], environment);
         Value value = evaluate(node->call.arguments[1], environment);
@@ -651,7 +876,7 @@ static Value evaluate_array_builtin(
         {
             value_free(&array);
             value_free(&value);
-            diagnostics_runtime_errorf("E3009", "Pass an array value.", "index_of requires an array.\n");
+            diagnostics_runtime_errorf("E3011", "Pass an array value.", "index_of requires an array.\n");
         }
 
         long index = -1;
@@ -672,10 +897,7 @@ static Value evaluate_array_builtin(
 
     if (strcmp(name, "clear") == 0)
     {
-        if (node->call.argument_count != 1)
-        {
-            diagnostics_runtime_errorf("E3003", "Pass the required number of arguments.", "clear expects 1 argument.\n");
-        }
+        check_builtin_arity(node, 1);
 
         Value *array = require_array_argument(
             node->call.arguments[0],
@@ -697,10 +919,7 @@ static Value evaluate_array_builtin(
 
     if (strcmp(name, "reverse") == 0)
     {
-        if (node->call.argument_count != 1)
-        {
-            diagnostics_runtime_errorf("E3003", "Pass the required number of arguments.", "reverse expects 1 argument.\n");
-        }
+        check_builtin_arity(node, 1);
 
         Value *array = require_array_argument(
             node->call.arguments[0],
@@ -722,10 +941,7 @@ static Value evaluate_array_builtin(
 
     if (strcmp(name, "slice") == 0)
     {
-        if (node->call.argument_count != 3)
-        {
-            diagnostics_runtime_errorf("E3003", "Pass the required number of arguments.", "slice expects 3 arguments.\n");
-        }
+        check_builtin_arity(node, 3);
 
         Value array = evaluate(node->call.arguments[0], environment);
         Value start_value = evaluate(node->call.arguments[1], environment);
@@ -736,7 +952,7 @@ static Value evaluate_array_builtin(
             value_free(&array);
             value_free(&start_value);
             value_free(&end_value);
-            diagnostics_runtime_errorf("E3009", "Pass an array value.", "slice requires an array.\n");
+            diagnostics_runtime_errorf("E3011", "Pass an array value.", "slice requires an array.\n");
         }
 
         long start = require_integer_value(&start_value, "slice");
@@ -762,10 +978,7 @@ static Value evaluate_array_builtin(
 
     if (strcmp(name, "join") == 0)
     {
-        if (node->call.argument_count != 2)
-        {
-            diagnostics_runtime_errorf("E3003", "Pass the required number of arguments.", "join expects 2 arguments.\n");
-        }
+        check_builtin_arity(node, 2);
 
         Value array = evaluate(node->call.arguments[0], environment);
         Value separator = evaluate(node->call.arguments[1], environment);
@@ -774,7 +987,7 @@ static Value evaluate_array_builtin(
         {
             value_free(&array);
             value_free(&separator);
-            diagnostics_runtime_errorf("E3009", "Pass an array value.", "join requires an array and a string separator.\n");
+            diagnostics_runtime_errorf("E3011", "Pass an array value.", "join requires an array and a string separator.\n");
         }
 
         size_t total = 1;
@@ -786,7 +999,7 @@ static Value evaluate_array_builtin(
             {
                 value_free(&array);
                 value_free(&separator);
-                diagnostics_runtime_errorf("E3009", "Pass an array value.", "join requires an array of strings.\n");
+                diagnostics_runtime_errorf("E3011", "Pass an array value.", "join requires an array of strings.\n");
             }
 
             total += value_string_length(&array.array.elements[i]);
@@ -829,23 +1042,20 @@ static Value evaluate_array_builtin(
         strcmp(name, "min") == 0 ||
         strcmp(name, "max") == 0)
     {
-        if (node->call.argument_count != 1)
-        {
-            diagnostics_runtime_errorf("E3003", "Pass the required number of arguments.", "array reduction expects 1 argument.\n");
-        }
+        check_builtin_arity(node, 1);
 
         Value array = evaluate(node->call.arguments[0], environment);
 
         if (array.type != VALUE_ARRAY)
         {
             value_free(&array);
-            diagnostics_runtime_errorf("E3009", "Pass an array value.", "array reduction requires an array.\n");
+            diagnostics_runtime_errorf("E3011", "Pass an array value.", "array reduction requires an array.\n");
         }
 
         if (array.array.count == 0)
         {
             value_free(&array);
-            diagnostics_runtime_errorf("E3013", "Check that the array is not empty first.", "array reduction requires a non-empty array.\n");
+            diagnostics_runtime_errorf("E3012", "check length(array) > 0 first", "array reduction requires a non-empty array.\n");
         }
 
         for (int i = 0; i < array.array.count; i++)
@@ -853,7 +1063,7 @@ static Value evaluate_array_builtin(
             if (array.array.elements[i].type != VALUE_INT)
             {
                 value_free(&array);
-                diagnostics_runtime_errorf("E3009", "Pass an array value.", "array reduction requires an array of integers.\n");
+                diagnostics_runtime_errorf("E3011", "Pass an array value.", "array reduction requires an array of integers.\n");
             }
         }
 
@@ -892,23 +1102,20 @@ static Value evaluate_array_builtin(
 
     if (strcmp(name, "first") == 0 || strcmp(name, "last") == 0)
     {
-        if (node->call.argument_count != 1)
-        {
-            diagnostics_runtime_errorf("E3003", "Pass the required number of arguments.", "first/last expects 1 argument.\n");
-        }
+        check_builtin_arity(node, 1);
 
         Value array = evaluate(node->call.arguments[0], environment);
 
         if (array.type != VALUE_ARRAY)
         {
             value_free(&array);
-            diagnostics_runtime_errorf("E3009", "Pass an array value.", "first/last requires an array.\n");
+            diagnostics_runtime_errorf("E3011", "Pass an array value.", "first/last requires an array.\n");
         }
 
         if (array.array.count == 0)
         {
             value_free(&array);
-            diagnostics_runtime_errorf("E3013", "Check that the array is not empty first.", "first/last cannot be used on an empty array.\n");
+            diagnostics_runtime_errorf("E3012", "check length(array) > 0 first", "first/last cannot be used on an empty array.\n");
         }
 
         int index = strcmp(name, "first") == 0 ? 0 : array.array.count - 1;
@@ -919,10 +1126,7 @@ static Value evaluate_array_builtin(
 
     if (strcmp(name, "sort") == 0)
     {
-        if (node->call.argument_count != 1)
-        {
-            diagnostics_runtime_errorf("E3003", "Pass the required number of arguments.", "sort expects 1 argument.\n");
-        }
+        check_builtin_arity(node, 1);
 
         Value *array = require_array_argument(
             node->call.arguments[0],
@@ -934,7 +1138,7 @@ static Value evaluate_array_builtin(
         {
             if (array->array.elements[i].type != VALUE_INT)
             {
-                diagnostics_runtime_errorf("E3009", "Pass an array value.", "sort currently requires an array of integers.\n");
+                diagnostics_runtime_errorf("E3011", "Pass an array value.", "sort currently requires an array of integers.\n");
             }
         }
 
@@ -967,37 +1171,37 @@ static Value evaluate_runtime_builtin(
 
     if (strcmp(name, "token_at") == 0)
     {
-        if (node->call.argument_count != 2)
-        {
-            diagnostics_runtime_errorf("E3121", "Pass an array and integer index.", "token_at expects two arguments.");
-        }
+        check_builtin_arity(node, 2);
         AstNode *array_node = node->call.arguments[0];
-        if (array_node->type != AST_VARIABLE_REFERENCE && array_node->type != AST_INDEX)
+        Value temporary_array = value_none();
+        Value *array = NULL;
+        if (array_node->type == AST_VARIABLE_REFERENCE || array_node->type == AST_INDEX)
         {
-            diagnostics_runtime_errorf("E3122", "Pass an array variable.", "token_at requires an array variable or indexed array.");
+            array = resolve_array_element(array_node, environment, 0);
         }
-        Value *array = resolve_array_element(array_node, environment, 0);
+        else
+        {
+            temporary_array = evaluate(array_node, environment);
+            array = &temporary_array;
+        }
         Value index_value = evaluate(node->call.arguments[1], environment);
         if (array->type != VALUE_ARRAY || index_value.type != VALUE_INT)
         {
-            value_free(&index_value);
-            diagnostics_runtime_errorf("E3123", "Pass an array and integer index.", "token_at expects (array, integer).");
+            diagnostics_runtime_errorf("E3007", "usage: token_at(array, index)", "token_at expects an array and an integer index");
         }
         long index = index_value.integer;
-        value_free(&index_value);
         if (index < 0 || index >= array->array.count)
         {
-            diagnostics_runtime_errorf("E3124", "Use an index within the array range.", "token_at index out of bounds.");
+            index_error(index, array->array.count);
         }
-        return value_copy(&array->array.elements[index]);
+        Value result = value_copy(&array->array.elements[index]);
+        value_free(&temporary_array);
+        return result;
     }
 
     if (strcmp(name, "args") == 0)
     {
-        if (node->call.argument_count != 0)
-        {
-            diagnostics_runtime_errorf("E3100", "Call args() without parameters.", "args expects no arguments.");
-        }
+        check_builtin_arity(node, 0);
 
         Value result = value_array(runtime_argument_count);
         for (int i = 0; i < runtime_argument_count; i++)
@@ -1009,10 +1213,7 @@ static Value evaluate_runtime_builtin(
 
     if (strcmp(name, "type_of") == 0)
     {
-        if (node->call.argument_count != 1)
-        {
-            diagnostics_runtime_errorf("E3120", "Pass one value.", "type_of expects one argument.");
-        }
+        check_builtin_arity(node, 1);
         Value value = evaluate(node->call.arguments[0], environment);
         const char *type_name = "none";
         switch (value.type)
@@ -1028,27 +1229,49 @@ static Value evaluate_runtime_builtin(
         return result;
     }
 
+    if (strcmp(name, "eprint") == 0)
+    {
+        for (int i = 0; i < node->call.argument_count; i++)
+        {
+            Value argument = evaluate(node->call.arguments[i], environment);
+            fflush(stdout);
+            value_fprint(stderr, &argument);
+            value_free(&argument);
+        }
+
+        return value_int(0);
+    }
+
+    if (strcmp(name, "exit") == 0)
+    {
+        check_builtin_arity(node, 1);
+
+        Value code = evaluate(node->call.arguments[0], environment);
+
+        if (code.type != VALUE_INT)
+        {
+            diagnostics_runtime_errorf("E3011", "pass an integer exit code, e.g. exit(1)", "exit requires an integer");
+        }
+
+        fflush(stdout);
+        exit((int)code.integer);
+    }
+
     if (strcmp(name, "fail") == 0)
     {
-        if (node->call.argument_count != 1)
-        {
-            diagnostics_runtime_errorf("E3117", "Pass one error message.", "fail expects one string argument.");
-        }
+        check_builtin_arity(node, 1);
         Value message = evaluate(node->call.arguments[0], environment);
         if (message.type != VALUE_STRING)
         {
             value_free(&message);
-            diagnostics_runtime_errorf("E3118", "Pass a string error message.", "fail requires a string.");
+            diagnostics_runtime_errorf("E3011", "Pass a string error message.", "fail requires a string.");
         }
-        diagnostics_runtime_errorf("E3119", "Fix the reported problem and run again.", "%s", message.string);
+        diagnostics_runtime_errorf("E3022", NULL, "%s", message.string);
     }
 
     if (strcmp(name, "to_string") == 0)
     {
-        if (node->call.argument_count != 1)
-        {
-            diagnostics_runtime_errorf("E3113", "Pass one value.", "to_string expects one argument.");
-        }
+        check_builtin_arity(node, 1);
 
         Value value = evaluate(node->call.arguments[0], environment);
         char buffer[64];
@@ -1075,8 +1298,11 @@ static Value evaluate_runtime_builtin(
         }
         else
         {
+            char *rendered = value_to_text(&value);
+            Value result = value_string(rendered);
+            free(rendered);
             value_free(&value);
-            diagnostics_runtime_errorf("E3114", "Convert a scalar value.", "to_string does not accept arrays.");
+            return result;
         }
 
         Value result = value_string(text);
@@ -1086,16 +1312,17 @@ static Value evaluate_runtime_builtin(
 
     if (strcmp(name, "chr") == 0)
     {
-        if (node->call.argument_count != 1)
-        {
-            diagnostics_runtime_errorf("E3115", "Pass one integer character code.", "chr expects one integer argument.");
-        }
+        check_builtin_arity(node, 1);
 
         Value code_value = evaluate(node->call.arguments[0], environment);
         if (code_value.type != VALUE_INT || code_value.integer < 0 || code_value.integer > 127)
         {
-            value_free(&code_value);
-            diagnostics_runtime_errorf("E3116", "Pass an integer from 0 through 127.", "chr currently supports ASCII character codes only.");
+            if (code_value.type != VALUE_INT)
+            {
+                diagnostics_runtime_errorf("E3011", NULL, "chr requires an integer (got %s)", value_type_name(code_value.type));
+            }
+
+            diagnostics_runtime_errorf("E3019", "chr supports ASCII codes 0 through 127", "chr code %ld is out of range", code_value.integer);
         }
 
         char character[2] = { (char)code_value.integer, '\0' };
@@ -1105,37 +1332,34 @@ static Value evaluate_runtime_builtin(
 
     if (strcmp(name, "read_file") == 0)
     {
-        if (node->call.argument_count != 1)
-        {
-            diagnostics_runtime_errorf("E3101", "Pass one file path.", "read_file expects one string argument.");
-        }
+        check_builtin_arity(node, 1);
 
         Value path = evaluate(node->call.arguments[0], environment);
         if (path.type != VALUE_STRING)
         {
             value_free(&path);
-            diagnostics_runtime_errorf("E3102", "Pass a string path.", "read_file requires a string path.");
+            diagnostics_runtime_errorf("E3011", "Pass a string path.", "read_file requires a string path.");
         }
 
         FILE *file = fopen(path.string, "rb");
         if (file == NULL)
         {
-            diagnostics_runtime_errorf("E3103", "Check that the file exists and is readable.", "read_file could not open '%s'.", path.string);
+            diagnostics_runtime_errorf("E3020", "check that the file exists and that the path is relative to where you run the program", "read_file could not open '%s'.", path.string);
         }
 
         if (fseek(file, 0, SEEK_END) != 0)
         {
             fclose(file);
+            diagnostics_runtime_errorf("E3021", NULL, "read_file could not read '%s'", path.string);
             value_free(&path);
-            diagnostics_runtime_errorf("E3104", "Use a readable regular file.", "read_file could not seek to the end of the file.");
         }
 
         long file_size = ftell(file);
         if (file_size < 0 || fseek(file, 0, SEEK_SET) != 0)
         {
             fclose(file);
+            diagnostics_runtime_errorf("E3021", NULL, "read_file could not read '%s'", path.string);
             value_free(&path);
-            diagnostics_runtime_errorf("E3104", "Use a readable regular file.", "read_file could not determine the file size.");
         }
 
         char *buffer = malloc((size_t)file_size + 1);
@@ -1151,8 +1375,8 @@ static Value evaluate_runtime_builtin(
         {
             free(buffer);
             fclose(file);
+            diagnostics_runtime_errorf("E3021", NULL, "read_file could not read '%s'", path.string);
             value_free(&path);
-            diagnostics_runtime_errorf("E3105", "Check file permissions and storage health.", "read_file failed while reading the file.");
         }
 
         buffer[bytes_read] = '\0';
@@ -1165,10 +1389,7 @@ static Value evaluate_runtime_builtin(
 
     if (strcmp(name, "write_file") == 0)
     {
-        if (node->call.argument_count != 2)
-        {
-            diagnostics_runtime_errorf("E3106", "Pass a path and text.", "write_file expects two string arguments.");
-        }
+        check_builtin_arity(node, 2);
 
         Value path = evaluate(node->call.arguments[0], environment);
         Value content = evaluate(node->call.arguments[1], environment);
@@ -1176,7 +1397,7 @@ static Value evaluate_runtime_builtin(
         {
             value_free(&path);
             value_free(&content);
-            diagnostics_runtime_errorf("E3107", "Pass string arguments.", "write_file requires a path and content, both strings.");
+            diagnostics_runtime_errorf("E3011", "Pass string arguments.", "write_file requires a path and content, both strings.");
         }
 
         FILE *file = fopen(path.string, "wb");
@@ -1198,10 +1419,7 @@ static Value evaluate_runtime_builtin(
 
     if (strcmp(name, "char_at") == 0)
     {
-        if (node->call.argument_count != 2)
-        {
-            diagnostics_runtime_errorf("E3108", "Pass a string and integer index.", "char_at expects two arguments.");
-        }
+        check_builtin_arity(node, 2);
 
         AstNode *text_node = node->call.arguments[0];
         Value temporary_text = value_none();
@@ -1220,7 +1438,7 @@ static Value evaluate_runtime_builtin(
         {
             value_free(&temporary_text);
             value_free(&index_value);
-            diagnostics_runtime_errorf("E3109", "Pass a string and integer index.", "char_at expects (string, integer).");
+            diagnostics_runtime_errorf("E3011", "Pass a string and integer index.", "char_at expects (string, integer).");
         }
 
         long index = index_value.integer;
@@ -1240,10 +1458,7 @@ static Value evaluate_runtime_builtin(
 
     if (strcmp(name, "substring") == 0)
     {
-        if (node->call.argument_count != 3)
-        {
-            diagnostics_runtime_errorf("E3110", "Pass a string, start index, and end index.", "substring expects three arguments.");
-        }
+        check_builtin_arity(node, 3);
 
         Value text = evaluate(node->call.arguments[0], environment);
         Value start_value = evaluate(node->call.arguments[1], environment);
@@ -1253,7 +1468,7 @@ static Value evaluate_runtime_builtin(
             value_free(&text);
             value_free(&start_value);
             value_free(&end_value);
-            diagnostics_runtime_errorf("E3111", "Pass (string, integer, integer).", "substring expects a string and two integer indices.");
+            diagnostics_runtime_errorf("E3011", "Pass (string, integer, integer).", "substring expects a string and two integer indices.");
         }
 
         long start = start_value.integer;
@@ -1264,7 +1479,7 @@ static Value evaluate_runtime_builtin(
         if (start < 0 || end < start || (size_t)end > length)
         {
             value_free(&text);
-            diagnostics_runtime_errorf("E3112", "Use an end-exclusive range inside the string.", "substring indices are out of bounds.");
+            diagnostics_runtime_errorf("E3007", "Use an end-exclusive range inside the string.", "substring indices are out of bounds.");
         }
 
         size_t result_length = (size_t)(end - start);
@@ -1335,7 +1550,9 @@ static int is_runtime_builtin(const char *name)
            strcmp(name, "read_file") == 0 ||
            strcmp(name, "write_file") == 0 ||
            strcmp(name, "char_at") == 0 ||
-           strcmp(name, "substring") == 0;
+           strcmp(name, "substring") == 0 ||
+           strcmp(name, "eprint") == 0 ||
+           strcmp(name, "exit") == 0;
 }
 
 static Value evaluate_index(
@@ -1351,21 +1568,19 @@ static Value evaluate_index(
     {
         value_free(&array);
         value_free(&index);
-        diagnostics_runtime_errorf("E3005", "Index only an array value.", "indexing requires an array.\n");
+        diagnostics_runtime_errorf("E3008", NULL, "indexing requires an array (got %s)", value_type_name(array.type));
     }
 
     if (index.type != VALUE_INT)
     {
         value_free(&array);
         value_free(&index);
-        diagnostics_runtime_errorf("E3006", "Use an integer array index.", "array index must be an integer.\n");
+        diagnostics_runtime_errorf("E3009", NULL, "array index must be an integer (got %s)", value_type_name(index.type));
     }
 
     if (index.integer < 0 || index.integer >= array.array.count)
     {
-        value_free(&array);
-        value_free(&index);
-        diagnostics_runtime_errorf("E3007", "Use an index within the array bounds.", "array index out of bounds.\n");
+        index_error(index.integer, array.array.count);
     }
 
     Value result = value_copy(&array.array.elements[index.integer]);
@@ -1402,7 +1617,7 @@ static Value binary_values(AstNode *node, Value left, Value right)
             default:
                 value_free(&left);
                 value_free(&right);
-                diagnostics_runtime_errorf("E3020", "Use none only with supported operators.", "unsupported none operator.\n");
+                operand_type_error("E3018", node->binary.operator, VALUE_NONE, VALUE_NONE);
         }
     }
 
@@ -1458,15 +1673,13 @@ static Value binary_values(AstNode *node, Value left, Value right)
             default:
                 value_free(&left);
                 value_free(&right);
-                diagnostics_runtime_errorf("E3021", "Use strings with supported operators.", "unsupported string operator.\n");
+                operand_type_error("E3018", node->binary.operator, VALUE_STRING, VALUE_STRING);
         }
     }
 
     if (left.type != VALUE_INT || right.type != VALUE_INT)
     {
-        value_free(&left);
-        value_free(&right);
-        diagnostics_runtime_errorf("E3022", "Use integers for arithmetic and numeric comparisons.", "arithmetic and numeric comparisons require integer values.\n");
+        operand_type_error("E3018", node->binary.operator, left.type, right.type);
     }
 
     switch (node->binary.operator)
@@ -1483,7 +1696,7 @@ static Value binary_values(AstNode *node, Value left, Value right)
         case TOKEN_SLASH:
             if (right.integer == 0)
             {
-                diagnostics_runtime_errorf("E3014", "Make sure the divisor is not zero.", "division by zero.\n");
+                diagnostics_runtime_errorf("E3013", "check that the divisor is not zero before dividing", "division by zero.\n");
             }
 
             return value_int(left.integer / right.integer);
@@ -1491,7 +1704,7 @@ static Value binary_values(AstNode *node, Value left, Value right)
         case TOKEN_PERCENT:
             if (right.integer == 0)
             {
-                diagnostics_runtime_errorf("E3015", "Make sure the divisor is not zero.", "modulo by zero.\n");
+                diagnostics_runtime_errorf("E3014", "check that the divisor is not zero before using %", "modulo by zero.\n");
             }
 
             return value_int(left.integer % right.integer);
@@ -1515,7 +1728,7 @@ static Value binary_values(AstNode *node, Value left, Value right)
             return value_bool(left.integer >= right.integer);
 
         default:
-            diagnostics_runtime_errorf("E3024", "Use a supported binary operator.", "unknown binary operator.\n");
+            diagnostics_runtime_errorf("E9001", "Use a supported binary operator.", "unknown binary operator.\n");
     }
 
     return value_none();
@@ -1656,7 +1869,7 @@ static Value evaluate_general(
             case TOKEN_NOT:
                 if (operand.type != VALUE_BOOL)
                 {
-                    diagnostics_runtime_errorf("E3016", "Use not with a boolean value.", "'not' requires a boolean value.\n");
+                    diagnostics_runtime_errorf("E3016", NULL, "not requires a boolean (got %s)", value_type_name(operand.type));
                 }
 
                 return value_bool(!operand.boolean);
@@ -1664,13 +1877,13 @@ static Value evaluate_general(
             case TOKEN_MINUS:
                 if (operand.type != VALUE_INT)
                 {
-                    diagnostics_runtime_errorf("E3017", "Use unary - with an integer value.", "unary '-' requires an integer value.\n");
+                    diagnostics_runtime_errorf("E3017", NULL, "unary minus requires an integer (got %s)", value_type_name(operand.type));
                 }
 
                 return value_int(-operand.integer);
 
             default:
-                diagnostics_runtime_errorf("E3023", "Use a supported unary operator.", "unknown unary operator.\n");
+                diagnostics_runtime_errorf("E9001", "Use a supported unary operator.", "unknown unary operator.\n");
         }
     }
 
@@ -1683,7 +1896,7 @@ static Value evaluate_general(
 
         if (variable == NULL)
         {
-            diagnostics_runtime_errorf("E3001", "Define the variable before using it.", "variable '%s' is not defined.", node->variable_reference.name);
+            diagnostics_runtime_errorf("E3001", undefined_variable_help(environment, node->variable_reference.name), "variable '%s' is not defined", node->variable_reference.name);
         }
 
         return value_copy(&variable->value);
@@ -1758,12 +1971,12 @@ static Value evaluate_general(
 
         if (function == NULL)
         {
-            diagnostics_runtime_errorf("E3002", "Define the function before calling it.", "function '%s' is not defined.", node->call.name);
+            diagnostics_runtime_errorf("E3002", undefined_function_help(environment, node->call.name), "function '%s' is not defined", node->call.name);
         }
 
         if (function->parameter_count != node->call.argument_count)
         {
-            diagnostics_runtime_errorf("E3003", "Pass the required number of arguments.", "function '%s' expects %d argument(s), got %d.", node->call.name, function->parameter_count, node->call.argument_count);
+            diagnostics_runtime_errorf("E3003", function_signature_help(function), "function '%s' expects %d argument(s), got %d", node->call.name, function->parameter_count, node->call.argument_count);
         }
 
         /* Lexical scoping: a function sees its own locals and the globals,
@@ -1785,16 +1998,22 @@ static Value evaluate_general(
             );
         }
 
+        int call_line = diagnostics_line;
+        diagnostics_push_frame(function->name, call_line);
+
         ExecutionResult function_result = execute(
             function->body,
             function_environment
         );
 
+        diagnostics_pop_frame();
+        diagnostics_line = call_line;
+
         environment_free(function_environment);
 
         if (function_result.broke || function_result.continued)
         {
-            diagnostics_runtime_errorf("E3004", "Use break or continue inside a loop.", "loop control statement outside of a loop.\n");
+            diagnostics_runtime_errorf("E3004", "break and continue can only be used inside a while loop", "break or continue outside a loop");
         }
 
         return function_result.value;
@@ -1811,7 +2030,7 @@ static Value evaluate_general(
 
             if (left.type != VALUE_BOOL)
             {
-                diagnostics_runtime_errorf("E3018", "Use and with boolean values.", "'and' requires boolean values.\n");
+                diagnostics_runtime_errorf("E3016", NULL, "and requires booleans (got %s)", value_type_name(left.type));
             }
 
             if (!left.boolean)
@@ -1826,7 +2045,7 @@ static Value evaluate_general(
 
             if (right.type != VALUE_BOOL)
             {
-                diagnostics_runtime_errorf("E3018", "Use and with boolean values.", "'and' requires boolean values.\n");
+                diagnostics_runtime_errorf("E3016", NULL, "and requires booleans (got %s)", value_type_name(right.type));
             }
 
             return value_bool(right.boolean);
@@ -1841,7 +2060,7 @@ static Value evaluate_general(
 
             if (left.type != VALUE_BOOL)
             {
-                diagnostics_runtime_errorf("E3019", "Use or with boolean values.", "'or' requires boolean values.\n");
+                diagnostics_runtime_errorf("E3016", NULL, "or requires booleans (got %s)", value_type_name(left.type));
             }
 
             if (left.boolean)
@@ -1856,7 +2075,7 @@ static Value evaluate_general(
 
             if (right.type != VALUE_BOOL)
             {
-                diagnostics_runtime_errorf("E3019", "Use or with boolean values.", "'or' requires boolean values.\n");
+                diagnostics_runtime_errorf("E3016", NULL, "or requires booleans (got %s)", value_type_name(right.type));
             }
 
             return value_bool(right.boolean);
@@ -1875,7 +2094,7 @@ static Value evaluate_general(
         return binary_values(node, left, right);
     }
 
-    diagnostics_runtime_errorf("E3025", "Provide a valid expression.", "invalid expression.\n");
+    diagnostics_runtime_errorf("E9001", "Provide a valid expression.", "invalid expression.\n");
 }
 
 static ExecutionResult execute(
@@ -1894,6 +2113,11 @@ static ExecutionResult execute(
     if (node == NULL)
     {
         return result;
+    }
+
+    if (node->type != AST_PROGRAM)
+    {
+        diagnostics_line = node->line;
     }
 
     switch (node->type)
@@ -1944,14 +2168,12 @@ static ExecutionResult execute(
                     break;
                 }
 
-                value_free(&right);
-
-                if (target->value.type == VALUE_NONE && right.type == VALUE_NONE)
-                {
-                    diagnostics_runtime_errorf("E3020", "Use none only with supported operators.", "unsupported none operator.\n");
-                }
-
-                diagnostics_runtime_errorf("E3022", "Use integers for arithmetic and numeric comparisons.", "arithmetic and numeric comparisons require integer values.\n");
+                operand_type_error(
+                    target->value.type == VALUE_NONE && right.type == VALUE_NONE ? "E3018" : "E3018",
+                    TOKEN_PLUS,
+                    target->value.type,
+                    right.type
+                );
             }
 
             Value value = evaluate(
@@ -2008,21 +2230,19 @@ static ExecutionResult execute(
             {
                 value_free(&index);
                 value_free(&value);
-                diagnostics_runtime_errorf("E3005", "Index only an array value.", "indexing requires an array.\n");
+                diagnostics_runtime_errorf("E3008", NULL, "indexing requires an array (got %s)", value_type_name(array->type));
             }
 
             if (index.type != VALUE_INT)
             {
                 value_free(&index);
                 value_free(&value);
-                diagnostics_runtime_errorf("E3006", "Use an integer array index.", "array index must be an integer.\n");
+                diagnostics_runtime_errorf("E3009", NULL, "array index must be an integer (got %s)", value_type_name(index.type));
             }
 
             if (index.integer < 0 || index.integer >= array->array.count)
             {
-                value_free(&index);
-                value_free(&value);
-                diagnostics_runtime_errorf("E3007", "Use an index within the array bounds.", "array index out of bounds.\n");
+                index_error(index.integer, array->array.count);
             }
 
             value_array_make_unique(array);
@@ -2063,7 +2283,7 @@ static ExecutionResult execute(
 
             if (condition.type != VALUE_BOOL)
             {
-                diagnostics_runtime_errorf("E3026", "Use a boolean expression as the if condition.", "if condition must be a boolean.\n");
+                diagnostics_runtime_errorf("E3015", NULL, "condition must be a boolean (got %s)", value_type_name(condition.type));
             }
 
             if (condition.boolean)
@@ -2100,6 +2320,8 @@ static ExecutionResult execute(
         {
             while (1)
             {
+                diagnostics_line = node->line;
+
                 Value condition = evaluate(
                     node->while_statement.condition,
                     environment
@@ -2107,7 +2329,7 @@ static ExecutionResult execute(
 
                 if (condition.type != VALUE_BOOL)
                 {
-                    diagnostics_runtime_errorf("E3027", "Use a boolean expression as the while condition.", "while condition must be a boolean.\n");
+                    diagnostics_runtime_errorf("E3015", NULL, "condition must be a boolean (got %s)", value_type_name(condition.type));
                 }
 
                 if (!condition.boolean)
@@ -2166,8 +2388,13 @@ void interpreter_run(AstNode *program)
 
     environment_free(environment);
 
+    if (result.returned)
+    {
+        diagnostics_runtime_errorf("E3005", "return can only be used inside a fun block", "return outside a function");
+    }
+
     if (result.broke || result.continued)
     {
-        diagnostics_runtime_errorf("E3004", "Use break or continue inside a loop.", "loop control statement outside of a loop.\n");
+        diagnostics_runtime_errorf("E3004", "break and continue can only be used inside a while loop", "break or continue outside a loop");
     }
 }

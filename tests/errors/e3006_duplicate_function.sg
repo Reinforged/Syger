@@ -1,0 +1,7 @@
+fun area(w, h)
+    return w * h
+
+fun area(size)
+    return size * size
+
+print(area(3))

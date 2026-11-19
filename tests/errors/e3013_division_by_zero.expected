@@ -1,0 +1,6 @@
+error[E3013]: division by zero
+ --> tests/errors/e3013_division_by_zero.sg:3
+  |
+3 | print(total / count)
+  |
+  = help: check that the divisor is not zero before dividing

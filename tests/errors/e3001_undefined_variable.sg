@@ -1,0 +1,3 @@
+total = 10
+count = 3
+print(totl + count)

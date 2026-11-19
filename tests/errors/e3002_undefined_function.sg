@@ -1,0 +1,9 @@
+fun average(items)
+    total = sum(items)
+    return total / lenght(items)
+
+fun report(values)
+    print("average:")
+    print(average(values))
+
+report([1, 2, 3])

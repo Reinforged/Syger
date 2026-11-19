@@ -1,0 +1,6 @@
+error[E1003]: unterminated string
+ --> tests/errors/e1003_unterminated_string.sg:1:8
+  |
+1 | name = "Syger
+  |        ^
+  = help: close the string with a matching "

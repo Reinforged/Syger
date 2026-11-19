@@ -1,0 +1,5 @@
+error[E1005]: unexpected character '$'
+ --> tests/errors/e1005_unexpected_character.sg:2:15
+  |
+2 | total = price $ 2
+  |               ^

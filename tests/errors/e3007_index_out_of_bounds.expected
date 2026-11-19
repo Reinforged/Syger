@@ -1,0 +1,6 @@
+error[E3007]: index 3 is out of bounds for an array of length 3
+ --> tests/errors/e3007_index_out_of_bounds.sg:4
+  |
+4 |     print(items[i])
+  |
+  = help: valid indexes are 0 to 2

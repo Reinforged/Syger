@@ -4,6 +4,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+#include "diagnostics.h"
+
 static int is_at_end(Lexer *lexer)
 {
     return *lexer->current == '\0';
@@ -18,6 +20,23 @@ static char advance_char(Lexer *lexer)
 static char peek_char(Lexer *lexer)
 {
     return *lexer->current;
+}
+
+static Token make_token(Lexer *lexer, TokenType type);
+
+_Noreturn static void lexer_error(
+    Lexer *lexer,
+    const char *code,
+    const char *message,
+    const char *help
+)
+{
+    Token token;
+    token.type = TOKEN_EOF;
+    token.start = lexer->start;
+    token.length = (int)(lexer->current - lexer->start);
+    token.line = lexer->line;
+    diagnostics_syntax_error(&token, code, message, help);
 }
 
 static Token make_token(Lexer *lexer, TokenType type)
@@ -65,6 +84,8 @@ static void skip_whitespace(Lexer *lexer)
 
 static Token string_token(Lexer *lexer)
 {
+    int start_line = lexer->line;
+
     while (!is_at_end(lexer) && peek_char(lexer) != '"')
     {
         if (peek_char(lexer) == '\n')
@@ -75,10 +96,14 @@ static Token string_token(Lexer *lexer)
         advance_char(lexer);
     }
 
-    if (!is_at_end(lexer))
+    if (is_at_end(lexer))
     {
-        advance_char(lexer);
+        lexer->current = lexer->start + 1;
+        lexer->line = start_line;
+        lexer_error(lexer, "E1003", "unterminated string", "close the string with a matching \"");
     }
+
+    advance_char(lexer);
 
     return make_token(lexer, TOKEN_STRING);
 }
@@ -312,11 +337,7 @@ static Token handle_indentation(Lexer *lexer)
     {
         if (lexer->indent_count >= 64)
         {
-            fprintf(
-                stderr,
-                "Syger lexer error: maximum indentation depth exceeded.\n"
-            );
-            exit(1);
+            lexer_error(lexer, "E1001", "maximum indentation depth exceeded", "move deeply nested code into a function");
         }
 
         lexer->indent_stack[lexer->indent_count] = spaces;
@@ -340,11 +361,7 @@ static Token handle_indentation(Lexer *lexer)
 
         if (spaces != lexer->indent_stack[target_count - 1])
         {
-            fprintf(
-                stderr,
-                "Syger lexer error: inconsistent indentation.\n"
-            );
-            exit(1);
+            lexer_error(lexer, "E1002", "inconsistent indentation", "this line's indentation does not match any enclosing block; use the same number of spaces as the block it belongs to");
         }
 
         lexer->pending_dedents =
@@ -431,7 +448,7 @@ Token lexer_next(Lexer *lexer)
                 lexer,
                 match_char(lexer, '=') ?
                     TOKEN_BANG_EQUAL :
-                    TOKEN_EOF
+                    (lexer_error(lexer, "E1004", "unexpected character '!'", "use 'not' to negate a boolean, or '!=' to compare"), TOKEN_EOF)
             );
 
         case '<':
@@ -472,5 +489,14 @@ Token lexer_next(Lexer *lexer)
             return make_token(lexer, TOKEN_RIGHT_BRACKET);
     }
 
-    return make_token(lexer, TOKEN_EOF);
+    char message[64];
+    if ((unsigned char)c >= 32 && (unsigned char)c < 127)
+    {
+        snprintf(message, sizeof(message), "unexpected character '%c'", c);
+    }
+    else
+    {
+        snprintf(message, sizeof(message), "unexpected character (byte 0x%02x)", (unsigned char)c);
+    }
+    lexer_error(lexer, "E1005", message, NULL);
 }

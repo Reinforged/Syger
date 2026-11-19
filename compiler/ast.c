@@ -102,8 +102,22 @@ char *ast_intern(const char *name)
     return intern_table.slots[slot];
 }
 
-AstNode *ast_create_program(void) {
+int ast_current_line = 0;
+
+static AstNode *ast_alloc_node(void)
+{
     AstNode *node = malloc(sizeof(AstNode));
+
+    if (node != NULL)
+    {
+        node->line = ast_current_line;
+    }
+
+    return node;
+}
+
+AstNode *ast_create_program(void) {
+    AstNode *node = ast_alloc_node();
 
     if (node == NULL) {
         fprintf(stderr, "Out of memory.\n");
@@ -136,7 +150,7 @@ void ast_program_add(AstNode *program, AstNode *statement) {
 }
 
 AstNode *ast_create_string(const char *value) {
-    AstNode *node = malloc(sizeof(AstNode));
+    AstNode *node = ast_alloc_node();
 
     if (node == NULL) {
         fprintf(stderr, "Out of memory.\n");
@@ -151,7 +165,7 @@ AstNode *ast_create_string(const char *value) {
 
 AstNode *ast_create_integer(long value)
 {
-    AstNode *node = malloc(sizeof(AstNode));
+    AstNode *node = ast_alloc_node();
 
     if (node == NULL)
     {
@@ -167,7 +181,7 @@ AstNode *ast_create_integer(long value)
 
 AstNode *ast_create_boolean(int boolean)
 {
-    AstNode *node = malloc(sizeof(AstNode));
+    AstNode *node = ast_alloc_node();
 
     if (node == NULL)
     {
@@ -183,7 +197,7 @@ AstNode *ast_create_boolean(int boolean)
 
 AstNode *ast_create_none(void)
 {
-    AstNode *node = malloc(sizeof(AstNode));
+    AstNode *node = ast_alloc_node();
 
     if (node == NULL)
     {
@@ -202,7 +216,7 @@ AstNode *ast_create_call(
     int argument_count
 )
 {
-    AstNode *node = malloc(sizeof(AstNode));
+    AstNode *node = ast_alloc_node();
 
     if (node == NULL)
     {
@@ -225,7 +239,7 @@ AstNode *ast_create_variable_declaration(
     const char *name,
     AstNode *value
 ) {
-    AstNode *node = malloc(sizeof(AstNode));
+    AstNode *node = ast_alloc_node();
 
     if (node == NULL) {
         fprintf(stderr, "Out of memory.\n");
@@ -240,7 +254,7 @@ AstNode *ast_create_variable_declaration(
 }
 
 AstNode *ast_create_variable_reference(const char *name) {
-    AstNode *node = malloc(sizeof(AstNode));
+    AstNode *node = ast_alloc_node();
 
     if (node == NULL) {
         fprintf(stderr, "Out of memory.\n");
@@ -259,7 +273,7 @@ AstNode *ast_create_binary(
     AstNode *right
 )
 {
-    AstNode *node = malloc(sizeof(AstNode));
+    AstNode *node = ast_alloc_node();
 
     if (node == NULL)
     {
@@ -280,7 +294,7 @@ AstNode *ast_create_unary(
     AstNode *operand
 )
 {
-    AstNode *node = malloc(sizeof(AstNode));
+    AstNode *node = ast_alloc_node();
 
     if (node == NULL)
     {
@@ -301,7 +315,7 @@ AstNode *ast_create_if(
     AstNode *else_body
 )
 {
-    AstNode *node = malloc(sizeof(AstNode));
+    AstNode *node = ast_alloc_node();
 
     if (node == NULL)
     {
@@ -322,7 +336,7 @@ AstNode *ast_create_while(
     AstNode *body
 )
 {
-    AstNode *node = malloc(sizeof(AstNode));
+    AstNode *node = ast_alloc_node();
 
     if (node == NULL)
     {
@@ -344,7 +358,7 @@ AstNode *ast_create_function(
     AstNode *body
 )
 {
-    AstNode *node = malloc(sizeof(AstNode));
+    AstNode *node = ast_alloc_node();
 
     if (node == NULL)
     {
@@ -371,7 +385,7 @@ AstNode *ast_create_function(
 
 AstNode *ast_create_return(AstNode *value)
 {
-    AstNode *node = malloc(sizeof(AstNode));
+    AstNode *node = ast_alloc_node();
 
     if (node == NULL)
     {
@@ -387,7 +401,7 @@ AstNode *ast_create_return(AstNode *value)
 
 AstNode *ast_create_array(AstNode **elements, int count)
 {
-    AstNode *node = malloc(sizeof(AstNode));
+    AstNode *node = ast_alloc_node();
 
     if (node == NULL)
     {
@@ -404,7 +418,7 @@ AstNode *ast_create_array(AstNode **elements, int count)
 
 AstNode *ast_create_index(AstNode *array, AstNode *index)
 {
-    AstNode *node = malloc(sizeof(AstNode));
+    AstNode *node = ast_alloc_node();
 
     if (node == NULL)
     {
@@ -425,7 +439,7 @@ AstNode *ast_create_index_assignment(
     AstNode *value
 )
 {
-    AstNode *node = malloc(sizeof(AstNode));
+    AstNode *node = ast_alloc_node();
 
     if (node == NULL)
     {
@@ -449,7 +463,7 @@ static void print_indent(int indent) {
 
 AstNode *ast_create_break(void)
 {
-    AstNode *node = malloc(sizeof(AstNode));
+    AstNode *node = ast_alloc_node();
 
     if (node == NULL)
     {
@@ -464,7 +478,7 @@ AstNode *ast_create_break(void)
 
 AstNode *ast_create_continue(void)
 {
-    AstNode *node = malloc(sizeof(AstNode));
+    AstNode *node = ast_alloc_node();
 
     if (node == NULL)
     {

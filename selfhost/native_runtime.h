@@ -59,6 +59,49 @@ struct SygerArray {
 
 /* ---- errors -------------------------------------------------------------- */
 
+/*
+ * Errors print in the same format as the interpreter:
+ *
+ *   error[E3007]: index 3 is out of bounds for an array of length 3
+ *    --> program.sg:4
+ *      |
+ *    4 |     print(items[i])
+ *      |
+ *      = help: valid indexes are 0 to 2
+ *      = note: in function 'show', called from line 9
+ *
+ * Generated code keeps syger_line up to date (one store per statement) and
+ * records calls with syger_enter/syger_leave for the traceback.
+ */
+
+extern long syger_line;
+extern const char *syger_source_path;
+
+typedef struct {
+    const char *name;
+    long call_line;
+} SygerFrame;
+
+#define SYGER_MAX_FRAMES 4096
+extern SygerFrame syger_frames[SYGER_MAX_FRAMES];
+extern int syger_depth;
+
+static inline void syger_enter(const char *name)
+{
+    if (syger_depth < SYGER_MAX_FRAMES) {
+        syger_frames[syger_depth].name = name;
+        syger_frames[syger_depth].call_line = syger_line;
+    }
+    syger_depth++;
+}
+
+static inline void syger_leave(void)
+{
+    syger_depth--;
+    if (syger_depth < SYGER_MAX_FRAMES) syger_line = syger_frames[syger_depth].call_line;
+}
+
+_Noreturn void syger_error(const char *code, const char *help, const char *format, ...);
 _Noreturn void syger_fail(const char *message);
 _Noreturn void syger_failf(const char *format, ...);
 
@@ -163,14 +206,14 @@ static inline SygerValue syger_mul(SygerValue l, SygerValue r)
 static inline SygerValue syger_div(SygerValue l, SygerValue r)
 {
     if (!SYGER_BOTH_INT(l, r)) syger_arith_error(l, r);
-    if (r.as.integer == 0) syger_fail("division by zero");
+    if (r.as.integer == 0) syger_error("E3013", "check that the divisor is not zero before dividing", "division by zero");
     return syger_int(l.as.integer / r.as.integer);
 }
 
 static inline SygerValue syger_mod(SygerValue l, SygerValue r)
 {
     if (!SYGER_BOTH_INT(l, r)) syger_arith_error(l, r);
-    if (r.as.integer == 0) syger_fail("modulo by zero");
+    if (r.as.integer == 0) syger_error("E3014", "check that the divisor is not zero before using %", "modulo by zero");
     return syger_int(l.as.integer % r.as.integer);
 }
 
@@ -201,23 +244,32 @@ static inline SygerValue syger_ne(SygerValue l, SygerValue r)
     return result;
 }
 
-_Noreturn void syger_type_error(SygerValue value, const char *message);
+_Noreturn void syger_type_error(const char *code, SygerValue value, const char *message);
 
 static inline int syger_truth(SygerValue v)
 {
-    if (__builtin_expect(v.type != SYGER_BOOL, 0)) syger_type_error(v, "condition must be a boolean");
+    if (__builtin_expect(v.type != SYGER_BOOL, 0)) syger_type_error("E3015", v, "condition must be a boolean");
+    return v.as.boolean;
+}
+
+/* Operand of and/or. */
+static inline int syger_logic_operand(SygerValue v, const char *operator)
+{
+    if (__builtin_expect(v.type != SYGER_BOOL, 0)) {
+        syger_type_error("E3016", v, operator[0] == 'a' ? "and requires booleans" : "or requires booleans");
+    }
     return v.as.boolean;
 }
 
 static inline SygerValue syger_not(SygerValue v)
 {
-    if (v.type != SYGER_BOOL) syger_type_error(v, "not requires a boolean");
+    if (v.type != SYGER_BOOL) syger_type_error("E3016", v, "not requires a boolean");
     return syger_bool(!v.as.boolean);
 }
 
 static inline SygerValue syger_neg(SygerValue v)
 {
-    if (v.type != SYGER_INT) syger_type_error(v, "unary minus requires an integer");
+    if (v.type != SYGER_INT) syger_type_error("E3017", v, "unary minus requires an integer");
     return syger_int(-v.as.integer);
 }
 
@@ -272,6 +324,8 @@ static inline SygerValue *syger_index_ptr(SygerValue *array, SygerValue index)
 /* Value arguments are consumed. SygerValue * arguments are borrowed lvalues. */
 
 SygerValue syger_b_print(SygerValue value);
+SygerValue syger_b_eprint(SygerValue value);
+SygerValue syger_b_exit(SygerValue code);
 SygerValue syger_b_type_of(SygerValue value);
 SygerValue syger_b_fail(SygerValue message);
 SygerValue syger_b_args(void);

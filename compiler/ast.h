@@ -29,6 +29,7 @@ typedef struct AstNode AstNode;
 
 struct AstNode {
     AstNodeType type;
+    int line; /* source line, for error messages */
 
     union {
         struct {
@@ -117,6 +118,9 @@ struct AstNode {
 
 /* Returns the shared copy of name; equal names give equal pointers. */
 char *ast_intern(const char *name);
+
+/* Line given to newly created nodes; the parser keeps it up to date. */
+extern int ast_current_line;
 
 AstNode *ast_create_program(void);
 void ast_program_add(AstNode *program, AstNode *statement);

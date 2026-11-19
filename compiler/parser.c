@@ -1,4 +1,5 @@
 #include "parser.h"
+#include "diagnostics.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -8,18 +9,33 @@ static void advance(Parser *parser)
 {
     parser->previous = parser->current;
     parser->current = lexer_next(parser->lexer);
+    ast_current_line = parser->previous.line;
+}
+
+/* Statements are tagged with the line they start on, even when (like if
+   and while) the node is only created after parsing its whole body. */
+static void add_statement(AstNode *block, int line, AstNode *statement)
+{
+    statement->line = line;
+    ast_program_add(block, statement);
 }
 
 static void parser_error(Parser *parser, const char *message)
 {
-    fprintf(
-        stderr,
-        "Syger parser error on line %d: %s\n",
-        parser->current.line,
-        message
-    );
+    Token at = parser->current;
 
-    exit(1);
+    /* "Expected ..." at a line break or end of file reads better pointing
+       just past the last token on the previous line. */
+    if (parser->previous.start != NULL &&
+        (at.type == TOKEN_EOF || at.type == TOKEN_INDENT || at.type == TOKEN_DEDENT ||
+         at.line > parser->previous.line))
+    {
+        at = parser->previous;
+        at.start = parser->previous.start + parser->previous.length;
+        at.length = 1;
+    }
+
+    diagnostics_syntax_error(&at, "E2001", message, NULL);
 }
 
 static void consume(
@@ -517,6 +533,9 @@ void parser_init(Parser *parser, Lexer *lexer)
 
     parser->current.type = TOKEN_EOF;
     parser->previous.type = TOKEN_EOF;
+    parser->previous.start = NULL;
+    parser->previous.length = 0;
+    parser->previous.line = 0;
 
 
     advance(parser);
@@ -552,46 +571,47 @@ static AstNode *parse_block(Parser *parser)
         parser->current.type != TOKEN_EOF
     )
     {
+        int line = parser->current.line;
         
         if (parser->current.type == TOKEN_RETURN)
         {
             advance(parser);
-            ast_program_add(block, parse_return(parser));
+            add_statement(block, line, parse_return(parser));
             continue;
         }
 
         if (parser->current.type == TOKEN_BREAK)
         {
             advance(parser);
-            ast_program_add(block, parse_break());
+            add_statement(block, line, parse_break());
             continue;
         }
 
         if (parser->current.type == TOKEN_CONTINUE)
         {
             advance(parser);
-            ast_program_add(block, parse_continue());
+            add_statement(block, line, parse_continue());
             continue;
         }
         
         if (parser->current.type == TOKEN_FUNCTION)
         {
             advance(parser);
-            ast_program_add(block, parse_function(parser));
+            add_statement(block, line, parse_function(parser));
             continue;
         }
         
         if (parser->current.type == TOKEN_IF)
         {
             advance(parser);
-            ast_program_add(block, parse_if(parser));
+            add_statement(block, line, parse_if(parser));
             continue;
         }
         
         if (parser->current.type == TOKEN_WHILE)
         {
             advance(parser);
-            ast_program_add(block, parse_while(parser));
+            add_statement(block, line, parse_while(parser));
             continue;
         }
 
@@ -627,7 +647,7 @@ static AstNode *parse_block(Parser *parser)
             );
         }
 
-        ast_program_add(block, statement);
+        add_statement(block, line, statement);
     }
 
     if (parser->current.type == TOKEN_DEDENT)
@@ -783,46 +803,47 @@ AstNode *parser_parse(Parser *parser)
 
     while (parser->current.type != TOKEN_EOF)
     {
+        int line = parser->current.line;
         
         if (parser->current.type == TOKEN_RETURN)
         {
             advance(parser);
-            ast_program_add(program, parse_return(parser));
+            add_statement(program, line, parse_return(parser));
             continue;
         }
 
         if (parser->current.type == TOKEN_BREAK)
         {
             advance(parser);
-            ast_program_add(program, parse_break());
+            add_statement(program, line, parse_break());
             continue;
         }
 
         if (parser->current.type == TOKEN_CONTINUE)
         {
             advance(parser);
-            ast_program_add(program, parse_continue());
+            add_statement(program, line, parse_continue());
             continue;
         }
         
         if (parser->current.type == TOKEN_FUNCTION)
         {
             advance(parser);
-            ast_program_add(program, parse_function(parser));
+            add_statement(program, line, parse_function(parser));
             continue;
         }
         
         if (parser->current.type == TOKEN_IF)
         {
             advance(parser);
-            ast_program_add(program, parse_if(parser));
+            add_statement(program, line, parse_if(parser));
             continue;
         }
         
         if (parser->current.type == TOKEN_WHILE)
         {
             advance(parser);
-            ast_program_add(program, parse_while(parser));
+            add_statement(program, line, parse_while(parser));
             continue;
         }
     
@@ -859,7 +880,7 @@ AstNode *parser_parse(Parser *parser)
             );
         }
 
-        ast_program_add(program, statement);
+        add_statement(program, line, statement);
     }
 
     return program;

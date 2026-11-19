@@ -1,0 +1,3 @@
+name = "Syger"
+version = 2
+print(name + version)

@@ -1,0 +1,5 @@
+error[E3009]: array index must be an integer (got string)
+ --> tests/errors/e3009_index_not_integer.sg:2
+  |
+2 | print(items["first"])
+  |

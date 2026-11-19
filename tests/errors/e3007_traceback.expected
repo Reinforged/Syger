@@ -1,0 +1,8 @@
+error[E3007]: index 2 is out of bounds for an array of length 1
+ --> tests/errors/e3007_traceback.sg:2
+  |
+2 |     return items[position]
+  |
+  = help: valid indexes are 0 to 0
+  = note: in function 'pick', called from line 5
+  = note: in function 'show_third', called from line 8

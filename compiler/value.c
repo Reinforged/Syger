@@ -278,46 +278,67 @@ void value_free(Value *value)
     }
 }
 
-static void value_print_inline(const Value *value)
+static void value_print_inline(FILE *out, const Value *value)
 {
     switch (value->type)
     {
         case VALUE_STRING:
-            printf("%s", value->string);
+            fprintf(out, "%s", value->string);
             break;
 
         case VALUE_INT:
-            printf("%ld", value->integer);
+            fprintf(out, "%ld", value->integer);
             break;
 
         case VALUE_BOOL:
-            printf("%s", value->boolean ? "true" : "false");
+            fprintf(out, "%s", value->boolean ? "true" : "false");
             break;
 
         case VALUE_NONE:
-            printf("none");
+            fprintf(out, "none");
             break;
 
         case VALUE_ARRAY:
-            printf("[");
+            fprintf(out, "[");
 
             for (int i = 0; i < value->array.count; i++)
             {
                 if (i > 0)
                 {
-                    printf(", ");
+                    fprintf(out, ", ");
                 }
 
-                value_print_inline(&value->array.elements[i]);
+                value_print_inline(out, &value->array.elements[i]);
             }
 
-            printf("]");
+            fprintf(out, "]");
             break;
     }
 }
 
+void value_fprint(FILE *out, const Value *value)
+{
+    value_print_inline(out, value);
+    fputc('\n', out);
+}
+
+char *value_to_text(const Value *value)
+{
+    char *text = NULL;
+    size_t size = 0;
+    FILE *out = open_memstream(&text, &size);
+
+    if (out == NULL)
+    {
+        out_of_memory();
+    }
+
+    value_print_inline(out, value);
+    fclose(out);
+    return text;
+}
+
 void value_print(const Value *value)
 {
-    value_print_inline(value);
-    printf("\n");
+    value_fprint(stdout, value);
 }

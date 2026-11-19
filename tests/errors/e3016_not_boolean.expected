@@ -1,0 +1,5 @@
+error[E3016]: not requires a boolean (got integer)
+ --> tests/errors/e3016_not_boolean.sg:1
+  |
+1 | print(not 5)
+  |

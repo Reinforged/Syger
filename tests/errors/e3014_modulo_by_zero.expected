@@ -1,0 +1,6 @@
+error[E3014]: modulo by zero
+ --> tests/errors/e3014_modulo_by_zero.sg:1
+  |
+1 | print(7 % 0)
+  |
+  = help: check that the divisor is not zero before using %

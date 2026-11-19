@@ -1,0 +1,5 @@
+error[E2001]: Expected ')' after function arguments
+ --> tests/errors/e2001_syntax_error.sg:3:16
+  |
+3 |     print("big"
+  |                ^

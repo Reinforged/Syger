@@ -1,0 +1,5 @@
+error[E3022]: age cannot be negative
+ --> tests/errors/e3022_fail.sg:3
+  |
+3 |     fail("age cannot be negative")
+  |

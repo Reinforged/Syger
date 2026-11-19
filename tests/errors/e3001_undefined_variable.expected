@@ -1,0 +1,6 @@
+error[E3001]: variable 'totl' is not defined
+ --> tests/errors/e3001_undefined_variable.sg:3
+  |
+3 | print(totl + count)
+  |
+  = help: did you mean 'total'?

@@ -21,7 +21,7 @@ static char *read_file(const char *path) {
 
     if (size < 0) {
         fclose(file);
-        diagnostics_fatal("E0002", "Could not determine file size.", "Check that the input is a regular readable file.");
+        diagnostics_fatal("E0001", "Could not determine file size.", "Check that the input is a regular readable file.");
     }
 
     char *buffer = malloc((size_t)size + 1);
@@ -46,6 +46,7 @@ int main(int argc, char **argv) {
 
     interpreter_set_arguments(argc - 2, argv + 2);
     char *source = read_file(argv[1]);
+    diagnostics_set_source(argv[1], source);
 
     Lexer lexer;
     lexer_init(&lexer, source);

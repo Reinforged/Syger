@@ -1,0 +1,6 @@
+error[E3003]: function 'add' expects 2 argument(s), got 1
+ --> tests/errors/e3003_wrong_argument_count.sg:4
+  |
+4 | print(add(1))
+  |
+  = help: 'add' is defined as add(a, b)

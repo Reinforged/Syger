@@ -1,0 +1,6 @@
+error[E3012]: pop cannot remove from an empty array
+ --> tests/errors/e3012_empty_array.sg:2
+  |
+2 | next = pop(queue)
+  |
+  = help: check length(array) > 0 first

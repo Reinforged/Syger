@@ -1,0 +1,6 @@
+error[E3006]: function 'area' is defined more than once
+ --> tests/errors/e3006_duplicate_function.sg:4
+  |
+4 | fun area(size)
+  |
+  = help: rename one of the functions

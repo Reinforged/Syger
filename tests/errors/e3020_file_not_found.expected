@@ -1,0 +1,6 @@
+error[E3020]: read_file could not open 'missing-file.txt'
+ --> tests/errors/e3020_file_not_found.sg:1
+  |
+1 | text = read_file("missing-file.txt")
+  |
+  = help: check that the file exists and that the path is relative to where you run the program

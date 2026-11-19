@@ -1,0 +1,6 @@
+error[E3010]: append needs a variable or indexed variable as its first argument
+ --> tests/errors/e3010_needs_variable.sg:1
+  |
+1 | append([1, 2], 3)
+  |
+  = help: store the array in a variable first, then pass the variable

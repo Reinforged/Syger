@@ -1,0 +1,8 @@
+fun pick(items, position)
+    return items[position]
+
+fun show_third(items)
+    print(pick(items, 2))
+
+show_third([10, 20, 30])
+show_third([10])

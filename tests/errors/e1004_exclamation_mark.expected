@@ -1,0 +1,6 @@
+error[E1004]: unexpected character '!'
+ --> tests/errors/e1004_exclamation_mark.sg:2:4
+  |
+2 | if !done
+  |    ^
+  = help: use 'not' to negate a boolean, or '!=' to compare

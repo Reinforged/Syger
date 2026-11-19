@@ -1,0 +1,8 @@
+error[E3002]: function 'lenght' is not defined
+ --> tests/errors/e3002_undefined_function.sg:3
+  |
+3 |     return total / lenght(items)
+  |
+  = help: did you mean 'length'?
+  = note: in function 'average', called from line 7
+  = note: in function 'report', called from line 9
