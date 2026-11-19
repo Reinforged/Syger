@@ -31,12 +31,25 @@ typedef struct Environment Environment;
 struct Environment {
     Variable *variables;
     int count;
+    int capacity;
     Environment *parent;
     Function *functions;
     int function_count;
     int function_scope;
+    Environment *next_free;
 };
 
+/*
+ * Variable and function names are interned by the AST (see ast_intern), so
+ * every lookup below compares names by pointer instead of with strcmp.
+ *
+ * Environments are created for every function call and every executed
+ * block, so finished ones go on a free list and are reused along with their
+ * variable arrays instead of being malloc'd and freed each time.
+ */
+
+static Environment *global_environment = NULL;
+static Environment *free_environments = NULL;
 static int runtime_argument_count = 0;
 static char **runtime_arguments = NULL;
 
@@ -48,19 +61,31 @@ void interpreter_set_arguments(int count, char **arguments)
 
 static Environment *environment_create(Environment *parent)
 {
-    Environment *environment = malloc(sizeof(Environment));
+    Environment *environment = free_environments;
 
-    if (environment == NULL)
+    if (environment != NULL)
     {
-        diagnostics_fatal("E0003", "Out of memory.", "Close other applications or reduce the size of the input.");
+        free_environments = environment->next_free;
     }
-    
+    else
+    {
+        environment = malloc(sizeof(Environment));
+
+        if (environment == NULL)
+        {
+            diagnostics_fatal("E0003", "Out of memory.", "Close other applications or reduce the size of the input.");
+        }
+
+        environment->variables = NULL;
+        environment->capacity = 0;
+    }
+
     environment->functions = NULL;
     environment->function_count = 0;
-    environment->variables = NULL;
     environment->count = 0;
     environment->parent = parent;
     environment->function_scope = 0;
+    environment->next_free = NULL;
 
     return environment;
 }
@@ -72,18 +97,32 @@ static Environment *environment_create_function(Environment *parent)
     return environment;
 }
 
+static Variable *find_local_variable(Environment *environment, const char *name)
+{
+    Variable *variables = environment->variables;
+
+    for (int i = 0; i < environment->count; i++)
+    {
+        if (variables[i].name == name)
+        {
+            return &variables[i];
+        }
+    }
+
+    return NULL;
+}
+
 static Variable *find_variable(Environment *environment, const char *name)
 {
     for (Environment *current = environment;
          current != NULL;
          current = current->parent)
     {
-        for (int i = 0; i < current->count; i++)
+        Variable *variable = find_local_variable(current, name);
+
+        if (variable != NULL)
         {
-            if (strcmp(current->variables[i].name, name) == 0)
-            {
-                return &current->variables[i];
-            }
+            return variable;
         }
     }
 
@@ -101,7 +140,7 @@ static Function *find_function(
     {
         for (int i = 0; i < current->function_count; i++)
         {
-            if (strcmp(current->functions[i].name, name) == 0)
+            if (current->functions[i].name == name)
             {
                 return &current->functions[i];
             }
@@ -111,31 +150,69 @@ static Function *find_function(
     return NULL;
 }
 
-static void set_variable(
+/* The variable an assignment would update: searched up to the nearest
+   function scope, like set_variable. */
+static Variable *find_assignable_variable(
     Environment *environment,
-    const char *name,
-    Value value
+    const char *name
 )
 {
-    Variable *variable = NULL;
     for (Environment *current = environment;
          current != NULL;
          current = current->parent)
     {
-        for (int i = 0; i < current->count; i++)
+        Variable *variable = find_local_variable(current, name);
+
+        if (variable != NULL)
         {
-            if (strcmp(current->variables[i].name, name) == 0)
-            {
-                variable = &current->variables[i];
-                break;
-            }
+            return variable;
         }
 
-        if (variable != NULL || current->function_scope)
+        if (current->function_scope)
         {
             break;
         }
     }
+
+    return NULL;
+}
+
+/* Adds a new variable to this environment without searching first. */
+static void define_variable(
+    Environment *environment,
+    char *name,
+    Value value
+)
+{
+    if (environment->count == environment->capacity)
+    {
+        int capacity = environment->capacity ? environment->capacity * 2 : 4;
+        Variable *variables = realloc(
+            environment->variables,
+            sizeof(Variable) * (size_t)capacity
+        );
+
+        if (variables == NULL)
+        {
+            diagnostics_fatal("E0003", "Out of memory.", "Close other applications or reduce the size of the input.");
+        }
+
+        environment->variables = variables;
+        environment->capacity = capacity;
+    }
+
+    environment->variables[environment->count].name = name;
+    environment->variables[environment->count].value = value;
+    environment->count++;
+}
+
+static void set_variable(
+    Environment *environment,
+    char *name,
+    Value value
+)
+{
+    Variable *variable = find_assignable_variable(environment, name);
 
     if (variable != NULL)
     {
@@ -144,64 +221,31 @@ static void set_variable(
         return;
     }
 
-    Variable *variables = realloc(
-        environment->variables,
-        sizeof(Variable) * (environment->count + 1)
-    );
-
-    if (variables == NULL)
-    {
-        diagnostics_fatal("E0003", "Out of memory.", "Close other applications or reduce the size of the input.");
-    }
-
-    environment->variables = variables;
-
-    Variable *new_variable =
-        &environment->variables[environment->count];
-
-    new_variable->name = malloc(strlen(name) + 1);
-
-    if (new_variable->name == NULL)
-    {
-        diagnostics_fatal("E0003", "Out of memory.", "Close other applications or reduce the size of the input.");
-    }
-
-    strcpy(new_variable->name, name);
-    new_variable->value = value;
-
-    environment->count++;
+    define_variable(environment, name, value);
 }
 
 static void environment_free(Environment *environment)
 {
     for (int i = 0; i < environment->count; i++)
     {
-        free(environment->variables[i].name);
         value_free(&environment->variables[i].value);
     }
-    
-    for (int i = 0; i < environment->function_count; i++)
+
+    if (environment->functions != NULL)
     {
-        free(environment->functions[i].name);
-
-        for (int j = 0;
-             j < environment->functions[i].parameter_count;
-             j++)
-        {
-            free(environment->functions[i].parameters[j]);
-        }
-
-        free(environment->functions[i].parameters);
+        free(environment->functions);
     }
 
-    free(environment->variables);
-    free(environment->functions);
-    free(environment);
+    environment->count = 0;
+    environment->functions = NULL;
+    environment->function_count = 0;
+    environment->next_free = free_environments;
+    free_environments = environment;
 }
 
 static void define_function(
     Environment *environment,
-    const char *name,
+    char *name,
     char **parameters,
     int parameter_count,
     AstNode *body
@@ -211,6 +255,8 @@ static void define_function(
 
     if (function != NULL)
     {
+        function->parameters = parameters;
+        function->parameter_count = parameter_count;
         function->body = body;
         return;
     }
@@ -227,50 +273,13 @@ static void define_function(
 
     environment->functions = functions;
 
+    /* Names and parameter lists are borrowed from the AST, which outlives
+       the interpreter run. */
     Function *new_function =
         &environment->functions[environment->function_count];
-
-    new_function->name = malloc(strlen(name) + 1);
-
-    if (new_function->name == NULL)
-    {
-        diagnostics_fatal("E0003", "Out of memory.", "Close other applications or reduce the size of the input.");
-    }
-
-    strcpy(new_function->name, name);
-
+    new_function->name = name;
+    new_function->parameters = parameters;
     new_function->parameter_count = parameter_count;
-
-    new_function->parameters = NULL;
-
-    if (parameter_count > 0)
-    {
-        new_function->parameters = malloc(
-            sizeof(char *) * parameter_count
-        );
-
-        if (new_function->parameters == NULL)
-        {
-            diagnostics_fatal("E0003", "Out of memory.", "Close other applications or reduce the size of the input.");
-        }
-    }
-    
-    for (int i = 0; i < parameter_count; i++)
-    {
-        new_function->parameters[i] =
-            malloc(strlen(parameters[i]) + 1);
-
-        if (new_function->parameters[i] == NULL)
-        {
-            diagnostics_fatal("E0003", "Out of memory.", "Close other applications or reduce the size of the input.");
-        }
-
-        strcpy(
-            new_function->parameters[i],
-            parameters[i]
-        );
-    }
-
     new_function->body = body;
     environment->function_count++;
 }
@@ -287,7 +296,8 @@ static Value evaluate(
 
 static Value *resolve_array_element(
     AstNode *node,
-    Environment *environment
+    Environment *environment,
+    int mutable
 )
 {
     if (node->type == AST_VARIABLE_REFERENCE)
@@ -307,12 +317,13 @@ static Value *resolve_array_element(
 
     if (node->type == AST_INDEX)
     {
+        Value index = evaluate(node->index.index, environment);
+
         Value *array = resolve_array_element(
             node->index.array,
-            environment
+            environment,
+            mutable
         );
-
-        Value index = evaluate(node->index.index, environment);
 
         if (array->type != VALUE_ARRAY)
         {
@@ -330,6 +341,11 @@ static Value *resolve_array_element(
         {
             value_free(&index);
             diagnostics_runtime_errorf("E3007", "Use an index within the array bounds.", "array index out of bounds.\n");
+        }
+
+        if (mutable)
+        {
+            value_array_make_unique(array);
         }
 
         Value *element = &array->array.elements[index.integer];
@@ -396,12 +412,14 @@ static Value *require_array_argument(
         diagnostics_runtime_errorf("E3008", "Pass an array variable or an indexed array.", "%s requires an array variable or indexed array.", name);
     }
 
-    Value *value = resolve_array_element(node, environment);
+    Value *value = resolve_array_element(node, environment, 1);
 
     if (value->type != VALUE_ARRAY)
     {
         diagnostics_runtime_errorf("E3009", "Pass an array value.", "%s requires an array.", name);
     }
+
+    value_array_make_unique(value);
 
     return value;
 }
@@ -453,9 +471,9 @@ static Value evaluate_array_builtin(
         AstNode *argument = node->call.arguments[0];
         if (argument->type == AST_VARIABLE_REFERENCE || argument->type == AST_INDEX)
         {
-            Value *value = resolve_array_element(argument, environment);
+            Value *value = resolve_array_element(argument, environment, 0);
             if (value->type == VALUE_ARRAY) return value_int(value->array.count);
-            if (value->type == VALUE_STRING) return value_int((long)strlen(value->string));
+            if (value->type == VALUE_STRING) return value_int((long)value_string_length(value));
             diagnostics_runtime_errorf("E3009", "Pass an array value.", "length requires an array or string.\n");
         }
 
@@ -468,7 +486,7 @@ static Value evaluate_array_builtin(
         }
         if (value.type == VALUE_STRING)
         {
-            size_t count = strlen(value.string);
+            size_t count = value_string_length(&value);
             value_free(&value);
             return value_int((long)count);
         }
@@ -491,18 +509,7 @@ static Value evaluate_array_builtin(
 
         Value value = evaluate(node->call.arguments[1], environment);
 
-        Value *elements = realloc(
-            array->array.elements,
-            sizeof(Value) * (size_t)(array->array.count + 1)
-        );
-
-        if (elements == NULL)
-        {
-            value_free(&value);
-            diagnostics_fatal("E0003", "Out of memory.", "Close other applications or reduce the size of the input.");
-        }
-
-        array->array.elements = elements;
+        value_array_reserve(array, array->array.count + 1);
         array->array.elements[array->array.count] = value;
         array->array.count++;
 
@@ -527,27 +534,10 @@ static Value evaluate_array_builtin(
             diagnostics_runtime_errorf("E3012", "Check that the array is not empty first.", "pop cannot remove from an empty array.\n");
         }
 
+        value_array_make_unique(array);
         int index = array->array.count - 1;
         Value result = array->array.elements[index];
         array->array.count--;
-
-        if (array->array.count == 0)
-        {
-            free(array->array.elements);
-            array->array.elements = NULL;
-        }
-        else
-        {
-            Value *elements = realloc(
-                array->array.elements,
-                sizeof(Value) * (size_t)array->array.count
-            );
-
-            if (elements != NULL)
-            {
-                array->array.elements = elements;
-            }
-        }
 
         return result;
     }
@@ -571,18 +561,7 @@ static Value evaluate_array_builtin(
 
         Value value = evaluate(node->call.arguments[2], environment);
 
-        Value *elements = realloc(
-            array->array.elements,
-            sizeof(Value) * (size_t)(array->array.count + 1)
-        );
-
-        if (elements == NULL)
-        {
-            value_free(&value);
-            diagnostics_fatal("E0003", "Out of memory.", "Close other applications or reduce the size of the input.");
-        }
-
-        array->array.elements = elements;
+        value_array_reserve(array, array->array.count + 1);
 
         for (int i = array->array.count; i > index; i--)
         {
@@ -611,6 +590,7 @@ static Value evaluate_array_builtin(
         Value index_value = evaluate(node->call.arguments[1], environment);
         long index = require_integer_value(&index_value, "remove");
         check_array_index(array, index, "remove", 0);
+        value_array_make_unique(array);
 
         Value result = array->array.elements[index];
 
@@ -620,24 +600,6 @@ static Value evaluate_array_builtin(
         }
 
         array->array.count--;
-
-        if (array->array.count == 0)
-        {
-            free(array->array.elements);
-            array->array.elements = NULL;
-        }
-        else
-        {
-            Value *elements = realloc(
-                array->array.elements,
-                sizeof(Value) * (size_t)array->array.count
-            );
-
-            if (elements != NULL)
-            {
-                array->array.elements = elements;
-            }
-        }
 
         return result;
     }
@@ -721,13 +683,13 @@ static Value evaluate_array_builtin(
             "clear"
         );
 
+        value_array_make_unique(array);
+
         for (int i = 0; i < array->array.count; i++)
         {
             value_free(&array->array.elements[i]);
         }
 
-        free(array->array.elements);
-        array->array.elements = NULL;
         array->array.count = 0;
 
         return value_int(0);
@@ -816,7 +778,7 @@ static Value evaluate_array_builtin(
         }
 
         size_t total = 1;
-        size_t separator_length = strlen(separator.string);
+        size_t separator_length = value_string_length(&separator);
 
         for (int i = 0; i < array.array.count; i++)
         {
@@ -827,7 +789,7 @@ static Value evaluate_array_builtin(
                 diagnostics_runtime_errorf("E3009", "Pass an array value.", "join requires an array of strings.\n");
             }
 
-            total += strlen(array.array.elements[i].string);
+            total += value_string_length(&array.array.elements[i]);
 
             if (i > 0)
             {
@@ -1014,7 +976,7 @@ static Value evaluate_runtime_builtin(
         {
             diagnostics_runtime_errorf("E3122", "Pass an array variable.", "token_at requires an array variable or indexed array.");
         }
-        Value *array = resolve_array_element(array_node, environment);
+        Value *array = resolve_array_element(array_node, environment, 0);
         Value index_value = evaluate(node->call.arguments[1], environment);
         if (array->type != VALUE_ARRAY || index_value.type != VALUE_INT)
         {
@@ -1225,7 +1187,7 @@ static Value evaluate_runtime_builtin(
             return value_bool(0);
         }
 
-        size_t length = strlen(content.string);
+        size_t length = value_string_length(&content);
         size_t written = fwrite(content.string, 1, length, file);
         int close_result = fclose(file);
         int success = written == length && close_result == 0;
@@ -1246,7 +1208,7 @@ static Value evaluate_runtime_builtin(
         Value *text = NULL;
         if (text_node->type == AST_VARIABLE_REFERENCE || text_node->type == AST_INDEX)
         {
-            text = resolve_array_element(text_node, environment);
+            text = resolve_array_element(text_node, environment, 0);
         }
         else
         {
@@ -1262,7 +1224,7 @@ static Value evaluate_runtime_builtin(
         }
 
         long index = index_value.integer;
-        size_t length = strlen(text->string);
+        size_t length = value_string_length(text);
         value_free(&index_value);
         if (index < 0 || (size_t)index >= length)
         {
@@ -1296,7 +1258,7 @@ static Value evaluate_runtime_builtin(
 
         long start = start_value.integer;
         long end = end_value.integer;
-        size_t length = strlen(text.string);
+        size_t length = value_string_length(&text);
         value_free(&start_value);
         value_free(&end_value);
         if (start < 0 || end < start || (size_t)end > length)
@@ -1321,6 +1283,45 @@ static Value evaluate_runtime_builtin(
     }
 
     return value_none();
+}
+
+enum
+{
+    CALL_RUNTIME_BUILTIN = 1,
+    CALL_ARRAY_BUILTIN,
+    CALL_PRINT,
+    CALL_USER_FUNCTION
+};
+
+static int is_runtime_builtin(const char *name);
+
+static int classify_call(const char *name)
+{
+    static const char *const array_builtins[] = {
+        "length", "append", "pop", "insert", "remove", "contains",
+        "index_of", "clear", "reverse", "sort", "slice", "join", "sum",
+        "min", "max", "first", "last"
+    };
+
+    if (is_runtime_builtin(name))
+    {
+        return CALL_RUNTIME_BUILTIN;
+    }
+
+    for (size_t i = 0; i < sizeof(array_builtins) / sizeof(array_builtins[0]); i++)
+    {
+        if (strcmp(name, array_builtins[i]) == 0)
+        {
+            return CALL_ARRAY_BUILTIN;
+        }
+    }
+
+    if (strcmp(name, "print") == 0)
+    {
+        return CALL_PRINT;
+    }
+
+    return CALL_USER_FUNCTION;
 }
 
 static int is_runtime_builtin(const char *name)
@@ -1373,7 +1374,228 @@ static Value evaluate_index(
     return result;
 }
 
+/* Applies a binary operator (other than and/or) to evaluated operands. */
+static Value binary_values(AstNode *node, Value left, Value right)
+{
+    if (node->binary.operator == TOKEN_EQUAL_EQUAL ||
+        node->binary.operator == TOKEN_BANG_EQUAL)
+    {
+        int equal = value_equals(&left, &right);
+        value_free(&left);
+        value_free(&right);
+        return value_bool(
+            node->binary.operator == TOKEN_EQUAL_EQUAL ? equal : !equal
+        );
+    }
+
+    if (left.type == VALUE_NONE &&
+        right.type == VALUE_NONE)
+    {
+        switch (node->binary.operator)
+        {
+            case TOKEN_EQUAL_EQUAL:
+                return value_bool(1);
+
+            case TOKEN_BANG_EQUAL:
+                return value_bool(0);
+
+            default:
+                value_free(&left);
+                value_free(&right);
+                diagnostics_runtime_errorf("E3020", "Use none only with supported operators.", "unsupported none operator.\n");
+        }
+    }
+
+    if (left.type == VALUE_STRING &&
+        right.type == VALUE_STRING)
+    {
+        switch (node->binary.operator)
+        {
+            case TOKEN_PLUS:
+            {
+                size_t left_length = value_string_length(&left);
+                size_t right_length = value_string_length(&right);
+
+                char *result = malloc(
+                    left_length + right_length + 1
+                );
+
+                if (result == NULL)
+                {
+                    diagnostics_fatal("E0003", "Out of memory.", "Close other applications or reduce the size of the input.");
+                }
+
+                memcpy(result, left.string, left_length);
+                memcpy(
+                    result + left_length,
+                    right.string,
+                    right_length + 1
+                );
+
+                Value value = value_string(result);
+                free(result);
+                value_free(&left);
+                value_free(&right);
+                return value;
+            }
+
+            case TOKEN_EQUAL_EQUAL:
+            {
+                int equal = strcmp(left.string, right.string) == 0;
+                value_free(&left);
+                value_free(&right);
+                return value_bool(equal);
+            }
+
+            case TOKEN_BANG_EQUAL:
+            {
+                int not_equal = strcmp(left.string, right.string) != 0;
+                value_free(&left);
+                value_free(&right);
+                return value_bool(not_equal);
+            }
+
+            default:
+                value_free(&left);
+                value_free(&right);
+                diagnostics_runtime_errorf("E3021", "Use strings with supported operators.", "unsupported string operator.\n");
+        }
+    }
+
+    if (left.type != VALUE_INT || right.type != VALUE_INT)
+    {
+        value_free(&left);
+        value_free(&right);
+        diagnostics_runtime_errorf("E3022", "Use integers for arithmetic and numeric comparisons.", "arithmetic and numeric comparisons require integer values.\n");
+    }
+
+    switch (node->binary.operator)
+    {
+        case TOKEN_PLUS:
+            return value_int(left.integer + right.integer);
+
+        case TOKEN_MINUS:
+            return value_int(left.integer - right.integer);
+
+        case TOKEN_STAR:
+            return value_int(left.integer * right.integer);
+
+        case TOKEN_SLASH:
+            if (right.integer == 0)
+            {
+                diagnostics_runtime_errorf("E3014", "Make sure the divisor is not zero.", "division by zero.\n");
+            }
+
+            return value_int(left.integer / right.integer);
+
+        case TOKEN_PERCENT:
+            if (right.integer == 0)
+            {
+                diagnostics_runtime_errorf("E3015", "Make sure the divisor is not zero.", "modulo by zero.\n");
+            }
+
+            return value_int(left.integer % right.integer);
+
+        case TOKEN_EQUAL_EQUAL:
+            return value_bool(left.integer == right.integer);
+
+        case TOKEN_BANG_EQUAL:
+            return value_bool(left.integer != right.integer);
+
+        case TOKEN_LESS:
+            return value_bool(left.integer < right.integer);
+
+        case TOKEN_LESS_EQUAL:
+            return value_bool(left.integer <= right.integer);
+
+        case TOKEN_GREATER:
+            return value_bool(left.integer > right.integer);
+
+        case TOKEN_GREATER_EQUAL:
+            return value_bool(left.integer >= right.integer);
+
+        default:
+            diagnostics_runtime_errorf("E3024", "Use a supported binary operator.", "unknown binary operator.\n");
+    }
+
+    return value_none();
+}
+
+static Value evaluate_general(AstNode *node, Environment *environment);
+
+/*
+ * Hot-path evaluator: handles the most frequent nodes (integers, variable
+ * reads, integer arithmetic and comparisons) in a small function, and hands
+ * everything else to evaluate_general.
+ */
 static Value evaluate(
+    AstNode *node,
+    Environment *environment
+)
+{
+    switch (node->type)
+    {
+        case AST_INTEGER:
+            return value_int(node->integer.value);
+
+        case AST_VARIABLE_REFERENCE:
+        {
+            Variable *variable = find_variable(
+                environment,
+                node->variable_reference.name
+            );
+
+            if (variable != NULL)
+            {
+                return value_copy(&variable->value);
+            }
+
+            break;
+        }
+
+        case AST_BINARY:
+        {
+            TokenType operator = node->binary.operator;
+
+            if (operator == TOKEN_AND || operator == TOKEN_OR)
+            {
+                break;
+            }
+
+            Value left = evaluate(node->binary.left, environment);
+            Value right = evaluate(node->binary.right, environment);
+
+            if (left.type == VALUE_INT && right.type == VALUE_INT)
+            {
+                long a = left.integer;
+                long b = right.integer;
+
+                switch (operator)
+                {
+                    case TOKEN_PLUS: return value_int(a + b);
+                    case TOKEN_MINUS: return value_int(a - b);
+                    case TOKEN_STAR: return value_int(a * b);
+                    case TOKEN_EQUAL_EQUAL: return value_bool(a == b);
+                    case TOKEN_BANG_EQUAL: return value_bool(a != b);
+                    case TOKEN_LESS: return value_bool(a < b);
+                    case TOKEN_LESS_EQUAL: return value_bool(a <= b);
+                    case TOKEN_GREATER: return value_bool(a > b);
+                    case TOKEN_GREATER_EQUAL: return value_bool(a >= b);
+                    default: break;
+                }
+            }
+
+            return binary_values(node, left, right);
+        }
+
+        default:
+            break;
+    }
+
+    return evaluate_general(node, environment);
+}
+
+static Value evaluate_general(
     AstNode *node,
     Environment *environment
 )
@@ -1469,9 +1691,25 @@ static Value evaluate(
 
     if (node->type == AST_CALL)
     {
-        if (is_runtime_builtin(node->call.name))
+        /* Resolve which kind of call this is once, then reuse it. */
+        if (node->call.kind == 0)
+        {
+            node->call.kind = classify_call(node->call.name);
+        }
+
+        if (node->call.kind == CALL_RUNTIME_BUILTIN)
         {
             return evaluate_runtime_builtin(node, environment);
+        }
+
+        if (node->call.kind == CALL_ARRAY_BUILTIN)
+        {
+            return evaluate_array_builtin(node, environment);
+        }
+
+        if (node->call.kind == CALL_USER_FUNCTION)
+        {
+            goto user_function;
         }
 
         if (strcmp(node->call.name, "length") == 0 ||
@@ -1512,6 +1750,7 @@ static Value evaluate(
             return value_int(0);
         }
 
+    user_function:;
         Function *function = find_function(
             environment,
             node->call.name
@@ -1527,8 +1766,10 @@ static Value evaluate(
             diagnostics_runtime_errorf("E3003", "Pass the required number of arguments.", "function '%s' expects %d argument(s), got %d.", node->call.name, function->parameter_count, node->call.argument_count);
         }
 
+        /* Lexical scoping: a function sees its own locals and the globals,
+           never the local variables of whoever called it. */
         Environment *function_environment =
-            environment_create_function(environment);
+            environment_create_function(global_environment);
 
         for (int i = 0; i < function->parameter_count; i++)
         {
@@ -1631,135 +1872,7 @@ static Value evaluate(
             environment
         );
 
-        if (left.type == VALUE_NONE &&
-            right.type == VALUE_NONE)
-        {
-            switch (node->binary.operator)
-            {
-                case TOKEN_EQUAL_EQUAL:
-                    return value_bool(1);
-
-                case TOKEN_BANG_EQUAL:
-                    return value_bool(0);
-
-                default:
-                    value_free(&left);
-                    value_free(&right);
-                    diagnostics_runtime_errorf("E3020", "Use none only with supported operators.", "unsupported none operator.\n");
-            }
-        }
-
-        if (left.type == VALUE_STRING &&
-            right.type == VALUE_STRING)
-        {
-            switch (node->binary.operator)
-            {
-                case TOKEN_PLUS:
-                {
-                    size_t left_length = strlen(left.string);
-                    size_t right_length = strlen(right.string);
-
-                    char *result = malloc(
-                        left_length + right_length + 1
-                    );
-
-                    if (result == NULL)
-                    {
-                        diagnostics_fatal("E0003", "Out of memory.", "Close other applications or reduce the size of the input.");
-                    }
-
-                    memcpy(result, left.string, left_length);
-                    memcpy(
-                        result + left_length,
-                        right.string,
-                        right_length + 1
-                    );
-
-                    Value value = value_string(result);
-                    free(result);
-                    value_free(&left);
-                    value_free(&right);
-                    return value;
-                }
-
-                case TOKEN_EQUAL_EQUAL:
-                {
-                    int equal = strcmp(left.string, right.string) == 0;
-                    value_free(&left);
-                    value_free(&right);
-                    return value_bool(equal);
-                }
-
-                case TOKEN_BANG_EQUAL:
-                {
-                    int not_equal = strcmp(left.string, right.string) != 0;
-                    value_free(&left);
-                    value_free(&right);
-                    return value_bool(not_equal);
-                }
-
-                default:
-                    value_free(&left);
-                    value_free(&right);
-                    diagnostics_runtime_errorf("E3021", "Use strings with supported operators.", "unsupported string operator.\n");
-            }
-        }
-
-        if (left.type != VALUE_INT || right.type != VALUE_INT)
-        {
-            value_free(&left);
-            value_free(&right);
-            diagnostics_runtime_errorf("E3022", "Use integers for arithmetic and numeric comparisons.", "arithmetic and numeric comparisons require integer values.\n");
-        }
-
-        switch (node->binary.operator)
-        {
-            case TOKEN_PLUS:
-                return value_int(left.integer + right.integer);
-
-            case TOKEN_MINUS:
-                return value_int(left.integer - right.integer);
-
-            case TOKEN_STAR:
-                return value_int(left.integer * right.integer);
-
-            case TOKEN_SLASH:
-                if (right.integer == 0)
-                {
-                    diagnostics_runtime_errorf("E3014", "Make sure the divisor is not zero.", "division by zero.\n");
-                }
-
-                return value_int(left.integer / right.integer);
-
-            case TOKEN_PERCENT:
-                if (right.integer == 0)
-                {
-                    diagnostics_runtime_errorf("E3015", "Make sure the divisor is not zero.", "modulo by zero.\n");
-                }
-
-                return value_int(left.integer % right.integer);
-
-            case TOKEN_EQUAL_EQUAL:
-                return value_bool(left.integer == right.integer);
-
-            case TOKEN_BANG_EQUAL:
-                return value_bool(left.integer != right.integer);
-
-            case TOKEN_LESS:
-                return value_bool(left.integer < right.integer);
-
-            case TOKEN_LESS_EQUAL:
-                return value_bool(left.integer <= right.integer);
-
-            case TOKEN_GREATER:
-                return value_bool(left.integer > right.integer);
-
-            case TOKEN_GREATER_EQUAL:
-                return value_bool(left.integer >= right.integer);
-
-            default:
-                diagnostics_runtime_errorf("E3024", "Use a supported binary operator.", "unknown binary operator.\n");
-        }
+        return binary_values(node, left, right);
     }
 
     diagnostics_runtime_errorf("E3025", "Provide a valid expression.", "invalid expression.\n");
@@ -1802,6 +1915,45 @@ static ExecutionResult execute(
 
         case AST_VARIABLE_DECLARATION:
         {
+            AstNode *value_node = node->variable_declaration.value;
+
+            /* Fast path for x = x + e: update x in place. */
+            if (value_node->type == AST_BINARY &&
+                value_node->binary.operator == TOKEN_PLUS &&
+                value_node->binary.left->type == AST_VARIABLE_REFERENCE &&
+                value_node->binary.left->variable_reference.name ==
+                    node->variable_declaration.name &&
+                find_assignable_variable(environment, node->variable_declaration.name) != NULL)
+            {
+                Value right = evaluate(value_node->binary.right, environment);
+                Variable *target = find_assignable_variable(
+                    environment,
+                    node->variable_declaration.name
+                );
+
+                if (target->value.type == VALUE_INT && right.type == VALUE_INT)
+                {
+                    target->value.integer += right.integer;
+                    break;
+                }
+
+                if (target->value.type == VALUE_STRING && right.type == VALUE_STRING)
+                {
+                    value_string_append(&target->value, &right);
+                    value_free(&right);
+                    break;
+                }
+
+                value_free(&right);
+
+                if (target->value.type == VALUE_NONE && right.type == VALUE_NONE)
+                {
+                    diagnostics_runtime_errorf("E3020", "Use none only with supported operators.", "unsupported none operator.\n");
+                }
+
+                diagnostics_runtime_errorf("E3022", "Use integers for arithmetic and numeric comparisons.", "arithmetic and numeric comparisons require integer values.\n");
+            }
+
             Value value = evaluate(
                 node->variable_declaration.value,
                 environment
@@ -1838,17 +1990,18 @@ static ExecutionResult execute(
             
         case AST_INDEX_ASSIGNMENT:
         {
-            Value *array = resolve_array_element(
-                node->index_assignment.array,
+            Value value = evaluate(
+                node->index_assignment.value,
                 environment
             );
             Value index = evaluate(
                 node->index_assignment.index,
                 environment
             );
-            Value value = evaluate(
-                node->index_assignment.value,
-                environment
+            Value *array = resolve_array_element(
+                node->index_assignment.array,
+                environment,
+                1
             );
 
             if (array->type != VALUE_ARRAY)
@@ -1872,6 +2025,7 @@ static ExecutionResult execute(
                 diagnostics_runtime_errorf("E3007", "Use an index within the array bounds.", "array index out of bounds.\n");
             }
 
+            value_array_make_unique(array);
             value_free(&array->array.elements[index.integer]);
             array->array.elements[index.integer] = value;
             value_free(&index);
@@ -2005,6 +2159,8 @@ void interpreter_run(AstNode *program)
 {
     Environment *environment =
         environment_create(NULL);
+
+    global_environment = environment;
 
     ExecutionResult result = execute(program, environment);
 

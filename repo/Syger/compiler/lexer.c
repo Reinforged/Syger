@@ -42,6 +42,13 @@ static void skip_whitespace(Lexer *lexer)
         {
             advance_char(lexer);
         }
+        else if (c == '#')
+        {
+            while (!is_at_end(lexer) && peek_char(lexer) != '\n')
+            {
+                advance_char(lexer);
+            }
+        }
         else if (c == '\n')
         {
             lexer->line++;
@@ -284,7 +291,15 @@ static Token handle_indentation(Lexer *lexer)
         spaces++;
     }
 
-    if (peek_char(lexer) == '\n' || is_at_end(lexer))
+    if (peek_char(lexer) == '#')
+    {
+        while (!is_at_end(lexer) && peek_char(lexer) != '\n')
+        {
+            advance_char(lexer);
+        }
+    }
+
+    if (peek_char(lexer) == '\n' || peek_char(lexer) == '\r' || is_at_end(lexer))
     {
         lexer->at_line_start = 0;
         return lexer_next(lexer);

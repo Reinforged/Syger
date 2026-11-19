@@ -38,5 +38,5 @@ C_SOURCE="$TEMP_DIR/program.c"
 
 "$BOOTSTRAP" "$ROOT/selfhost/compiler.sg" "$SOURCE" "$C_SOURCE"
 mkdir -p "$(dirname "$OUTPUT")"
-"$CC" -Wall -Wextra -std=c17 -I "$ROOT/selfhost" "$C_SOURCE" "$ROOT/selfhost/native_runtime.c" -o "$OUTPUT"
+"$CC" -Wall -Wextra -std=gnu17 -O2 -I "$ROOT/selfhost" "$C_SOURCE" "$ROOT/selfhost/native_runtime.c" -o "$OUTPUT"
 echo "Compiled $SOURCE -> $OUTPUT"

@@ -52,6 +52,7 @@ struct AstNode {
             char *name;
             AstNode **arguments;
             int argument_count;
+            int kind; /* cached dispatch: 0 = not yet resolved */
         } call;
         
         struct {
@@ -113,6 +114,9 @@ struct AstNode {
         } index_assignment;
     };
 };
+
+/* Returns the shared copy of name; equal names give equal pointers. */
+char *ast_intern(const char *name);
 
 AstNode *ast_create_program(void);
 void ast_program_add(AstNode *program, AstNode *statement);

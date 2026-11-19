@@ -1,0 +1,158 @@
+# Semantics that the interpreter and native compiler must agree on.
+# Output is compared byte-for-byte between both by the bootstrap script.
+
+print("--- arrays are values ---")
+a = [1, 2]
+b = a
+append(b, 3)
+print(a)
+print(b)
+
+fun push_and_return(items)
+    append(items, 9)
+    return items
+
+print(push_and_return(a))
+print(a)
+
+nested = [[1, 2], [3, 4]]
+copy = nested
+copy[0][1] = 99
+append(copy[1], 5)
+print(nested)
+print(copy)
+
+self = [1]
+append(self, self)
+print(self)
+append(self, self)
+print(self)
+
+row = nested[1]
+nested[1][0] = 42
+print(row)
+print(nested)
+
+print("--- strings ---")
+text = ""
+i = 0
+while i < 5
+    text = text + to_string(i)
+    i = i + 1
+print(text)
+alias = text
+text = text + "!"
+print(alias)
+print(text)
+print(length(text))
+print(char_at(text, 2))
+print(char_at(text, 99) == "")
+print(substring(text, 1, 4))
+print(text + text == "01234!01234!")
+
+print("--- globals and locals ---")
+counter = [0]
+total = 10
+
+fun bump()
+    counter[0] = counter[0] + 1
+    total = 500
+    return total
+
+print(bump())
+print(bump())
+print(counter)
+print(total)
+
+fun reads_global_defined_later()
+    return later_value * 2
+
+later_value = 21
+print(reads_global_defined_later())
+
+fun shadow(total)
+    total = total + 1
+    return total
+
+print(shadow(1))
+print(total)
+
+fun block_locals(n)
+    result = 0
+    if n > 0
+        inner = n * 2
+        result = inner
+    return result
+
+print(block_locals(4))
+print(block_locals(-1))
+
+print("--- loops ---")
+outer = 0
+found = []
+while outer < 4
+    outer = outer + 1
+    step = outer * 10
+    if outer == 2
+        continue
+    if outer == 4
+        break
+    append(found, step)
+print(found)
+
+fun early(items)
+    i = 0
+    while i < length(items)
+        value = items[i]
+        if value > 2
+            return value
+        i = i + 1
+    return none
+
+print(early([1, 2, 3, 4]))
+print(early([1]))
+
+print("--- recursion ---")
+fun fib(n)
+    if n < 2
+        return n
+    return fib(n - 1) + fib(n - 2)
+
+print(fib(20))
+
+fun no_return()
+    x = 1
+
+print(no_return())
+
+print("--- builtins ---")
+values = [5, 3, 8, 1]
+sort(values)
+print(values)
+reverse(values)
+print(values)
+print(pop(values))
+insert(values, 0, 7)
+print(remove(values, 1))
+print(values)
+print(slice(values, 0, 2))
+print(join(["a", "b", "c"], "-"))
+print(sum(values))
+print(min(values))
+print(max(values))
+print(first(values))
+print(last(values))
+print(contains(values, 3))
+print(index_of(values, 3))
+print(type_of(values))
+print(type_of("x"))
+print(type_of(1))
+print(type_of(true))
+print(type_of(none))
+print(to_string(42) + to_string(true))
+print(chr(65))
+print(-5 % 3)
+print(7 / 2)
+print(not (1 < 2) or 3 >= 3 and 2 <= 1)
+clear(values)
+print(values)

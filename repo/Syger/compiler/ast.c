@@ -19,6 +19,89 @@ static char *copy_string(const char *source) {
     return result;
 }
 
+/*
+ * Name interning: every identifier in the AST points at one shared copy of
+ * its text, so the interpreter can compare names by pointer. Interned names
+ * live for the whole program and are never freed individually.
+ */
+typedef struct {
+    char **slots;
+    size_t capacity;
+    size_t count;
+} InternTable;
+
+static InternTable intern_table = { NULL, 0, 0 };
+
+static size_t hash_name(const char *name)
+{
+    size_t hash = 1469598103934665603u;
+
+    for (const unsigned char *p = (const unsigned char *)name; *p; p++)
+    {
+        hash = (hash ^ *p) * 1099511628211u;
+    }
+
+    return hash;
+}
+
+static void intern_grow(void)
+{
+    size_t capacity = intern_table.capacity ? intern_table.capacity * 2 : 256;
+    char **slots = calloc(capacity, sizeof(char *));
+
+    if (slots == NULL) {
+        fprintf(stderr, "Out of memory.\n");
+        exit(1);
+    }
+
+    for (size_t i = 0; i < intern_table.capacity; i++)
+    {
+        char *name = intern_table.slots[i];
+
+        if (name == NULL)
+        {
+            continue;
+        }
+
+        size_t slot = hash_name(name) & (capacity - 1);
+
+        while (slots[slot] != NULL)
+        {
+            slot = (slot + 1) & (capacity - 1);
+        }
+
+        slots[slot] = name;
+    }
+
+    free(intern_table.slots);
+    intern_table.slots = slots;
+    intern_table.capacity = capacity;
+}
+
+char *ast_intern(const char *name)
+{
+    if ((intern_table.count + 1) * 2 > intern_table.capacity)
+    {
+        intern_grow();
+    }
+
+    size_t slot = hash_name(name) & (intern_table.capacity - 1);
+
+    while (intern_table.slots[slot] != NULL)
+    {
+        if (strcmp(intern_table.slots[slot], name) == 0)
+        {
+            return intern_table.slots[slot];
+        }
+
+        slot = (slot + 1) & (intern_table.capacity - 1);
+    }
+
+    intern_table.slots[slot] = copy_string(name);
+    intern_table.count++;
+    return intern_table.slots[slot];
+}
+
 AstNode *ast_create_program(void) {
     AstNode *node = malloc(sizeof(AstNode));
 
@@ -128,16 +211,9 @@ AstNode *ast_create_call(
     }
 
     node->type = AST_CALL;
+    node->call.kind = 0;
 
-    node->call.name = malloc(strlen(name) + 1);
-
-    if (node->call.name == NULL)
-    {
-        fprintf(stderr, "Out of memory.\n");
-        exit(1);
-    }
-
-    strcpy(node->call.name, name);
+    node->call.name = ast_intern(name);
 
     node->call.arguments = arguments;
     node->call.argument_count = argument_count;
@@ -157,7 +233,7 @@ AstNode *ast_create_variable_declaration(
     }
 
     node->type = AST_VARIABLE_DECLARATION;
-    node->variable_declaration.name = copy_string(name);
+    node->variable_declaration.name = ast_intern(name);
     node->variable_declaration.value = value;
 
     return node;
@@ -172,7 +248,7 @@ AstNode *ast_create_variable_reference(const char *name) {
     }
 
     node->type = AST_VARIABLE_REFERENCE;
-    node->variable_reference.name = copy_string(name);
+    node->variable_reference.name = ast_intern(name);
 
     return node;
 }
@@ -277,7 +353,15 @@ AstNode *ast_create_function(
     }
 
     node->type = AST_FUNCTION;
-    node->function.name = copy_string(name);
+    node->function.name = ast_intern(name);
+
+    for (int i = 0; i < parameter_count; i++)
+    {
+        char *interned = ast_intern(parameters[i]);
+        free(parameters[i]);
+        parameters[i] = interned;
+    }
+
     node->function.parameters = parameters;
     node->function.parameter_count = parameter_count;
     node->function.body = body;
@@ -655,8 +739,6 @@ void ast_free(AstNode *node)
             break;
 
         case AST_CALL:
-            free(node->call.name);
-
             for (int i = 0; i < node->call.argument_count; i++)
             {
                 ast_free(node->call.arguments[i]);
@@ -666,12 +748,10 @@ void ast_free(AstNode *node)
             break;
 
         case AST_VARIABLE_DECLARATION:
-            free(node->variable_declaration.name);
             ast_free(node->variable_declaration.value);
             break;
 
         case AST_VARIABLE_REFERENCE:
-            free(node->variable_reference.name);
             break;
 
         case AST_BINARY:
@@ -695,13 +775,6 @@ void ast_free(AstNode *node)
             break;
 
         case AST_FUNCTION:
-            free(node->function.name);
-
-            for (int i = 0; i < node->function.parameter_count; i++)
-            {
-                free(node->function.parameters[i]);
-            }
-
             free(node->function.parameters);
             ast_free(node->function.body);
             break;
