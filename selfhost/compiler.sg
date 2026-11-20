@@ -139,10 +139,24 @@ fun keyword_type(word)
         return "OR"
     elif word == "not"
         return "NOT"
+    elif word == "for"
+        return "FOR"
+    elif word == "in"
+        return "IN"
+    elif word == "import"
+        return "IMPORT"
+    elif word == "as"
+        return "AS"
     return "IDENTIFIER"
 
+fun is_number_part(character)
+    return is_digit(character) or character == "_"
+
+
 fun scan_tokens(source)
-    state = [source, 0, 1, true, [0], []]
+    # state[6] counts open (, [ and {; inside them line breaks and
+    # indentation don't matter.
+    state = [source, 0, 1, true, [0], [], 0]
     tokens = state[5]
     while state[1] < length(state[0])
         if state[3]
@@ -185,7 +199,8 @@ fun scan_tokens(source)
         if character == chr(10)
             state[1] = state[1] + 1
             state[2] = state[2] + 1
-            state[3] = true
+            if state[6] == 0
+                state[3] = true
             continue
         if character == "#"
             while state[1] < length(state[0]) and char_at(state[0], state[1]) != chr(10)
@@ -196,22 +211,51 @@ fun scan_tokens(source)
         start_line = state[2]
         if character == quote_character
             state[1] = state[1] + 1
-            string_start = state[1]
-            while state[1] < length(state[0]) and char_at(state[0], state[1]) != quote_character
-                if char_at(state[0], state[1]) == chr(10)
-                    state[2] = state[2] + 1
+            string_value = ""
+            while state[1] < length(state[0]) and char_at(state[0], state[1]) != quote_character and char_at(state[0], state[1]) != chr(10)
+                piece = char_at(state[0], state[1])
+                if piece == BS
+                    escape = char_at(state[0], state[1] + 1)
+                    if escape == "n"
+                        piece = chr(10)
+                    elif escape == "t"
+                        piece = chr(9)
+                    elif escape == "r"
+                        piece = chr(13)
+                    elif escape == quote_character or escape == BS
+                        piece = escape
+                    else
+                        compile_error("E1006", start_line, "unknown escape sequence in string", "supported escapes are " + BS + "n " + BS + "t " + BS + "r " + BS + quote_character + " and " + BS + BS + " (a backslash)")
+                    state[1] = state[1] + 1
+                string_value = string_value + piece
                 state[1] = state[1] + 1
             if char_at(state[0], state[1]) != quote_character
                 compile_error("E1003", start_line, "unterminated string", "close the string with a matching " + quote_character)
-            string_value = substring(state[0], string_start, state[1])
             state[1] = state[1] + 1
             append(tokens, ["STRING", string_value, start_line])
             continue
 
         if is_digit(character)
-            while is_digit(char_at(state[0], state[1]))
+            kind = "NUMBER"
+            while is_number_part(char_at(state[0], state[1]))
                 state[1] = state[1] + 1
-            append(tokens, ["NUMBER", substring(state[0], start_position, state[1]), start_line])
+            if char_at(state[0], state[1]) == "." and is_digit(char_at(state[0], state[1] + 1))
+                kind = "FLOAT"
+                state[1] = state[1] + 1
+                while is_number_part(char_at(state[0], state[1]))
+                    state[1] = state[1] + 1
+            if char_at(state[0], state[1]) == "e" or char_at(state[0], state[1]) == "E"
+                after = state[1] + 1
+                if char_at(state[0], after) == "+" or char_at(state[0], after) == "-"
+                    after = after + 1
+                if is_digit(char_at(state[0], after))
+                    kind = "FLOAT"
+                    state[1] = after
+                    while is_digit(char_at(state[0], state[1]))
+                        state[1] = state[1] + 1
+            if is_letter(char_at(state[0], state[1]))
+                compile_error("E1007", start_line, "invalid number", "numbers look like 42, 3.14 or 1.5e3; names can't start with a digit")
+            append(tokens, [kind, replace(substring(state[0], start_position, state[1]), "_", ""), start_line])
             continue
 
         if is_identifier_start(character)
@@ -254,9 +298,19 @@ fun scan_tokens(source)
             continue
 
         if character == "("
+            state[6] = state[6] + 1
             append(tokens, ["LEFT_PAREN", character, start_line])
         elif character == ")"
+            state[6] = max([state[6] - 1, 0])
             append(tokens, ["RIGHT_PAREN", character, start_line])
+        elif character == "{"
+            state[6] = state[6] + 1
+            append(tokens, ["LEFT_BRACE", character, start_line])
+        elif character == "}"
+            state[6] = max([state[6] - 1, 0])
+            append(tokens, ["RIGHT_BRACE", character, start_line])
+        elif character == ":"
+            append(tokens, ["COLON", character, start_line])
         elif character == ","
             append(tokens, ["COMMA", character, start_line])
         elif character == "+"
@@ -270,8 +324,10 @@ fun scan_tokens(source)
         elif character == "%"
             append(tokens, ["PERCENT", character, start_line])
         elif character == "["
+            state[6] = state[6] + 1
             append(tokens, ["LEFT_BRACKET", character, start_line])
         elif character == "]"
+            state[6] = max([state[6] - 1, 0])
             append(tokens, ["RIGHT_BRACKET", character, start_line])
         else
             compile_error("E1005", start_line, "unexpected character '" + character + "'", "")
@@ -316,24 +372,35 @@ fun consume_token(kind, message)
 
 fun parse_array_literal()
     elements = []
-    if current_type() != "RIGHT_BRACKET"
-        while true
-            append(elements, parse_expression())
-            if not match_token("COMMA")
-                break
+    while current_type() != "RIGHT_BRACKET"
+        append(elements, parse_expression())
+        if not match_token("COMMA")
+            break
     consume_token("RIGHT_BRACKET", "Expected ']' after array elements.")
     return ["array", elements]
 
 fun parse_call(name, line)
     consume_token("LEFT_PAREN", "Expected '(' after function name.")
     arguments = []
-    if current_type() != "RIGHT_PAREN"
-        while true
-            append(arguments, parse_expression())
-            if not match_token("COMMA")
-                break
+    while current_type() != "RIGHT_PAREN"
+        append(arguments, parse_expression())
+        if not match_token("COMMA")
+            break
     consume_token("RIGHT_PAREN", "Expected ')' after function arguments.")
     return ["call", name, arguments, line]
+
+# {key: value, ...}
+fun parse_map_literal()
+    keys = []
+    values = []
+    while current_type() != "RIGHT_BRACE"
+        append(keys, parse_expression())
+        consume_token("COLON", "Expected ':' after map key.")
+        append(values, parse_expression())
+        if not match_token("COMMA")
+            break
+    consume_token("RIGHT_BRACE", "Expected '}' after map entries.")
+    return ["map", keys, values]
 
 fun parse_postfix(node)
     while match_token("LEFT_BRACKET")
@@ -359,6 +426,12 @@ fun parse_primary()
     if current_type() == "NUMBER"
         token = advance_token()
         return parse_postfix(["integer", token[1]])
+    if current_type() == "FLOAT"
+        token = advance_token()
+        return parse_postfix(["float", token[1]])
+    if match_token("LEFT_BRACE")
+        node = parse_map_literal()
+        return parse_postfix(node)
     if match_token("TRUE")
         return parse_postfix(["boolean", true])
     if match_token("FALSE")
@@ -485,6 +558,13 @@ fun parse_statement_node()
         return ["break"]
     if match_token("CONTINUE")
         return ["continue"]
+    if match_token("FOR")
+        variable = consume_token("IDENTIFIER", "Expected a variable name after 'for'.")
+        consume_token("IN", "Expected 'in' after the for loop variable.")
+        iterable = parse_expression()
+        return ["for", variable[1], iterable, parse_block()]
+    if match_token("IMPORT")
+        return parse_import_after_keyword()
 
     if current_type() != "IDENTIFIER"
         parse_error("Expected a statement.")
@@ -499,6 +579,41 @@ fun parse_statement_node()
         return ["index_assign", lvalue, parse_expression()]
     parse_error("Expected '=' or '(' after identifier.")
     return ["none"]
+
+# import "path" [as name]  is  name = <contents of path>
+fun parse_import_after_keyword()
+    if current_type() != "STRING"
+        parse_error("Expected a file path in quotes after 'import'.")
+    path_token = advance_token()
+    path = path_token[1]
+    name = ""
+    if match_token("AS")
+        name = consume_token("IDENTIFIER", "Expected a name after 'as'.")[1]
+    else
+        name = default_import_name(path)
+    return ["assign", name, ["import", path, path_token[2]]]
+
+# The file name without directory or extension, if it is a valid name.
+fun default_import_name(path)
+    start = 0
+    i = 0
+    while i < length(path)
+        if char_at(path, i) == "/"
+            start = i + 1
+        i = i + 1
+    stop = start
+    while stop < length(path) and char_at(path, stop) != "."
+        stop = stop + 1
+    name = substring(path, start, stop)
+    valid = length(name) > 0 and not is_digit(char_at(name, 0))
+    i = 0
+    while i < length(name)
+        if not is_identifier_part(char_at(name, i))
+            valid = false
+        i = i + 1
+    if not valid
+        parse_error("This file name can't be used as a variable name; add 'as name'.")
+    return name
 
 fun parse_program()
     statements = []
@@ -576,6 +691,8 @@ fun collect_functions(statements)
             collect_if_functions(node)
         elif kind == "while"
             collect_functions(node[2][1])
+        elif kind == "for"
+            collect_functions(node[3][1])
         i = i + 1
     return none
 
@@ -623,6 +740,14 @@ fun declare_local(name)
     cname = fresh_name("l_" + name + "_")
     top = length(scope_names) - 1
     append(scope_names[top], name)
+    append(scope_cnames[top], cname)
+    return cname
+
+# A C local released like a variable but invisible to Syger code.
+fun declare_hidden(prefix)
+    cname = fresh_name(prefix)
+    top = length(scope_names) - 1
+    append(scope_names[top], " " + cname)
     append(scope_cnames[top], cname)
     return cname
 
@@ -759,6 +884,12 @@ fun lvalue_indexes(node)
     return result
 
 # Pointer to an lvalue. mutable makes each array along the path unique.
+# Reads base[i]...[k] without copying the containers along the way.
+fun emit_index_read(base, index_codes)
+    last = length(index_codes) - 1
+    container = emit_place(base, slice(index_codes, 0, last), false)
+    return "syger_index_at(" + container + ", " + index_codes[last] + ")"
+
 fun emit_place(base, index_codes, mutable)
     pointer = emit_variable_ptr(base)
     function_name = "syger_elem_ptr("
@@ -804,11 +935,27 @@ fun arity_help(name)
 
 fun check_arity(name, expected, actual)
     if expected != actual
-        label = name
-        if contains(function_names, name) and not contains(builtin_names, name)
-            label = "function '" + name + "'"
-        compile_error("E3003", error_line[0], label + " expects " + to_string(expected) + " argument(s), got " + to_string(actual), arity_help(name))
+        compile_error("E3003", error_line[0], "function '" + name + "' expects " + to_string(expected) + " argument(s), got " + to_string(actual), arity_help(name))
     return none
+
+fun check_builtin_arity(index, actual)
+    low = builtin_min_arguments[index]
+    high = builtin_max_arguments[index]
+    name = builtin_names[index]
+    if low < 0 or (actual >= low and actual <= high)
+        return none
+    help = "usage: " + builtin_usages[index]
+    if low == high
+        compile_error("E3003", error_line[0], name + " expects " + to_string(low) + " argument(s), got " + to_string(actual), help)
+    compile_error("E3003", error_line[0], name + " expects " + to_string(low) + " to " + to_string(high) + " arguments, got " + to_string(actual), help)
+    return none
+
+# C name of a builtin; ones that take a varying number of arguments get the
+# count appended (range2 is range(start, end)).
+fun builtin_c_name(name, count)
+    if contains(variadic_builtins, name)
+        return "syger_b_" + name + to_string(count)
+    return "syger_b_" + name
 
 fun emit_call(node)
     name = node[1]
@@ -822,7 +969,7 @@ fun emit_call(node)
         return result + "syger_int(0); })"
     builtin = index_of(builtin_names, name)
     if builtin >= 0
-        check_arity(name, builtin_arities[builtin], length(arguments))
+        check_builtin_arity(builtin, length(arguments))
         if contains(mutator_names, name)
             target = arguments[0]
             if not is_lvalue(target)
@@ -837,7 +984,7 @@ fun emit_call(node)
                 i = i + 1
             return wrap_sequenced(values[0] + indexes[0], "syger_b_" + name + "(" + join_codes(call_arguments) + ")")
         sequenced = emit_sequenced(arguments, false)
-        return wrap_sequenced(sequenced[0], "syger_b_" + name + "(" + join_codes(sequenced[1]) + ")")
+        return wrap_sequenced(sequenced[0], builtin_c_name(name, length(arguments)) + "(" + join_codes(sequenced[1]) + ")")
     function_index = index_of(function_names, name)
     if function_index < 0
         all_functions = slice(builtin_names, 0, length(builtin_names))
@@ -856,6 +1003,21 @@ fun emit_expression(node)
         return string_literal(node[1])
     if kind == "integer"
         return "syger_int(" + node[1] + "L)"
+    if kind == "float"
+        return "syger_float(" + node[1] + ")"
+    if kind == "map"
+        if length(node[1]) == 0
+            return "syger_map_new(0, NULL)"
+        pairs = []
+        i = 0
+        while i < length(node[1])
+            append(pairs, node[1][i])
+            append(pairs, node[2][i])
+            i = i + 1
+        sequenced = emit_sequenced(pairs, true)
+        return wrap_sequenced(sequenced[0], "syger_map_new(" + to_string(length(node[1])) + ", (SygerValue[]){" + join_codes(sequenced[1]) + "})")
+    if kind == "import"
+        return emit_import(node)
     if kind == "boolean"
         if node[1]
             return "syger_bool(1)"
@@ -874,7 +1036,7 @@ fun emit_expression(node)
     if kind == "index"
         if is_lvalue(node)
             indexes = emit_sequenced(lvalue_indexes(node), false)
-            return wrap_sequenced(indexes[0], "syger_retain(*" + emit_place(lvalue_base(node), indexes[1], false) + ")")
+            return wrap_sequenced(indexes[0], emit_index_read(lvalue_base(node), indexes[1]))
         sequenced = emit_sequenced([node[1], node[2]], true)
         return wrap_sequenced(sequenced[0], "syger_index(" + join_codes(sequenced[1]) + ")")
     if kind == "call"
@@ -894,6 +1056,23 @@ fun emit_expression(node)
         return wrap_sequenced(sequenced[0], binary_function(operator) + "(" + join_codes(sequenced[1]) + ")")
     fail("Compile error: unknown expression node " + kind)
     return ""
+
+# The data file is read and checked now, then baked into the program as
+# text; the program parses it when the import line runs.
+fun emit_import(node)
+    path = node[1]
+    error_line[0] = node[2]
+    if not starts_with(path, "/")
+        path = source_directory + path
+    problem = load_error(path)
+    if problem != ""
+        if starts_with(problem, "could not open")
+            compile_error("E3020", node[2], problem, "import paths are relative to the .sg file that imports them")
+        if starts_with(problem, "could not read")
+            compile_error("E3021", node[2], problem, "")
+        compile_error("E3026", node[2], "invalid data in " + problem, "fix the file; load_error(path) checks a file without stopping the program")
+    text = read_file(path)
+    return "syger_import_embedded(" + c_quote(path) + ", " + c_quote(text) + ", " + to_string(length(text)) + "L)"
 
 # ---- statements -----------------------------------------------------------
 
@@ -926,7 +1105,9 @@ fun emit_index_assign(node, level)
     target = node[1]
     value = emit_sequenced([node[2]], true)
     indexes = emit_sequenced(lvalue_indexes(target), false)
-    place = emit_place(lvalue_base(target), indexes[1], true)
+    last = length(indexes[1]) - 1
+    container = emit_place(lvalue_base(target), slice(indexes[1], 0, last), true)
+    place = "syger_index_slot(" + container + ", " + indexes[1][last] + ")"
     return spaces(level) + "{ " + value[0] + indexes[0] + "syger_set(" + place + ", " + value[1][0] + "); }" + NL
 
 fun emit_block(statements, level, is_loop)
@@ -960,7 +1141,7 @@ fun emit_statement(node, level)
         return emit_block(node[1], level, false)
     line = node[length(node) - 1]
     error_line[0] = line
-    if kind == "assign" or kind == "index_assign" or kind == "call" or kind == "return"
+    if kind == "assign" or kind == "index_assign" or kind == "call" or kind == "return" or kind == "for"
         return line_marker(line, prefix) + emit_statement_body(node, level)
     return emit_statement_body(node, level)
 
@@ -982,6 +1163,8 @@ fun emit_statement_body(node, level)
         return result + emit_block(node[2][1], level, true)
     if kind == "block"
         return emit_block(node[1], level, false)
+    if kind == "for"
+        return emit_for(node, level)
     if kind == "return"
         if not in_function[0]
             compile_error("E3005", error_line[0], "return outside a function", "return can only be used inside a fun block")
@@ -998,6 +1181,56 @@ fun emit_statement_body(node, level)
         return prefix + "{" + NL + emit_releases_until(loop_scope, level + 1) + prefix + "    " + kind + ";" + NL + prefix + "}" + NL
     fail("Compile error: unsupported statement " + kind)
     return ""
+
+# for name in sequence. The sequence is evaluated once and held in a hidden
+# local, so changing the original inside the loop doesn't affect the loop.
+# for name in range(...) becomes a plain counting loop.
+fun emit_for(node, level)
+    prefix = spaces(level)
+    line = node[4]
+    iterable = node[2]
+    result = prefix + "{" + NL
+    push_scope(false)
+    counter = fresh_name("t_i")
+    is_range = iterable[0] == "call" and iterable[1] == "range" and length(iterable[2]) >= 1 and length(iterable[2]) <= 3
+    item = ""
+    if is_range
+        arguments = iterable[2]
+        start = "0"
+        stop = ""
+        step = "1"
+        if length(arguments) == 1
+            stop = "syger_range_argument(" + emit_expression(arguments[0]) + ")"
+        else
+            start = "syger_range_argument(" + emit_expression(arguments[0]) + ")"
+            stop = "syger_range_argument(" + emit_expression(arguments[1]) + ")"
+            if length(arguments) == 3
+                step = "syger_range_argument(" + emit_expression(arguments[2]) + ")"
+        names = [fresh_name("t_start"), fresh_name("t_end"), fresh_name("t_step")]
+        result = result + prefix + "    long " + names[0] + " = " + start + ";" + NL
+        result = result + prefix + "    long " + names[1] + " = " + stop + ";" + NL
+        result = result + prefix + "    long " + names[2] + " = " + step + ";" + NL
+        result = result + prefix + "    syger_range_check_step(" + names[2] + ");" + NL
+        result = result + prefix + "    for (long " + counter + " = " + names[0] + "; " + names[2] + " > 0 ? " + counter + " < " + names[1] + " : " + counter + " > " + names[1] + "; " + counter + " += " + names[2] + ")" + NL
+        item = "syger_int(" + counter + ")"
+    else
+        sequence = declare_hidden("t_sequence")
+        result = result + prefix + "    SygerValue " + sequence + " = " + emit_expression(iterable) + ";" + NL
+        count = fresh_name("t_count")
+        result = result + prefix + "    long " + count + " = syger_iter_count(&" + sequence + ");" + NL
+        result = result + prefix + "    for (long " + counter + " = 0; " + counter + " < " + count + "; " + counter + "++)" + NL
+        item = "syger_iter_item(&" + sequence + ", " + counter + ")"
+    push_scope(true)
+    variable = declare_local(node[1])
+    body = prefix + "        syger_line = " + to_string(line) + ";" + NL
+    body = body + prefix + "        SygerValue " + variable + " = " + item + ";" + NL
+    body = body + emit_statement_list(node[3][1], level + 2)
+    body = body + emit_releases_until(length(scope_names) - 1, level + 2)
+    pop_scope()
+    result = result + prefix + "    {" + NL + body + prefix + "    }" + NL
+    result = result + emit_releases_until(length(scope_names) - 1, level + 1)
+    pop_scope()
+    return result + prefix + "}" + NL
 
 fun emit_statement_list(statements, level)
     result = ""
@@ -1111,9 +1344,70 @@ digit_chars = string_chars("0123456789")
 lowercase_chars = string_chars("abcdefghijklmnopqrstuvwxyz")
 uppercase_chars = string_chars("ABCDEFGHIJKLMNOPQRSTUVWXYZ")
 
-builtin_names = ["eprint", "exit", "print", "type_of", "fail", "args", "read_file", "write_file", "char_at", "substring", "chr", "to_string", "length", "token_at", "contains", "index_of", "slice", "join", "sum", "min", "max", "first", "last", "append", "pop", "insert", "remove", "clear", "reverse", "sort"]
-builtin_arities = [-1, 1, -1, 1, 1, 0, 1, 2, 2, 3, 1, 1, 1, 2, 2, 2, 3, 2, 1, 1, 1, 1, 1, 2, 1, 3, 2, 1, 1, 1]
+# Builtins: name, fewest and most arguments (-1: any number), usage.
+builtin_table = [
+    ["print", -1, -1, "print(value, ...)"],
+    ["eprint", -1, -1, "eprint(value, ...)"],
+    ["exit", 1, 1, "exit(code)"],
+    ["type_of", 1, 1, "type_of(value)"],
+    ["fail", 1, 1, "fail(message)"],
+    ["args", 0, 0, "args()"],
+    ["read_file", 1, 1, "read_file(path)"],
+    ["write_file", 2, 2, "write_file(path, text)"],
+    ["char_at", 2, 2, "char_at(text, index)"],
+    ["substring", 3, 3, "substring(text, start, end)"],
+    ["chr", 1, 1, "chr(code)"],
+    ["to_string", 1, 1, "to_string(value)"],
+    ["length", 1, 1, "length(text_array_or_map)"],
+    ["token_at", 2, 2, "token_at(array, index)"],
+    ["contains", 2, 2, "contains(array_map_or_text, value)"],
+    ["index_of", 2, 2, "index_of(array_or_text, value)"],
+    ["slice", 3, 3, "slice(array, start, end)"],
+    ["join", 2, 2, "join(array, separator)"],
+    ["sum", 1, 1, "sum(array)"],
+    ["min", 1, 1, "min(array)"],
+    ["max", 1, 1, "max(array)"],
+    ["first", 1, 1, "first(array)"],
+    ["last", 1, 1, "last(array)"],
+    ["append", 2, 2, "append(array, value)"],
+    ["pop", 1, 1, "pop(array)"],
+    ["insert", 3, 3, "insert(array, index, value)"],
+    ["remove", 2, 2, "remove(array_or_map, index_or_key)"],
+    ["clear", 1, 1, "clear(array)"],
+    ["reverse", 1, 1, "reverse(array)"],
+    ["sort", 1, 1, "sort(array)"],
+    ["keys", 1, 1, "keys(map)"],
+    ["values", 1, 1, "values(map)"],
+    ["get", 3, 3, "get(map_or_array, key, default)"],
+    ["range", 1, 3, "range(end), range(start, end) or range(start, end, step)"],
+    ["to_int", 1, 1, "to_int(value)"],
+    ["to_float", 1, 1, "to_float(value)"],
+    ["round", 1, 2, "round(number) or round(number, digits)"],
+    ["floor", 1, 1, "floor(number)"],
+    ["ceil", 1, 1, "ceil(number)"],
+    ["abs", 1, 1, "abs(number)"],
+    ["sqrt", 1, 1, "sqrt(number)"],
+    ["split", 1, 2, "split(text) or split(text, separator)"],
+    ["trim", 1, 1, "trim(text)"],
+    ["upper", 1, 1, "upper(text)"],
+    ["lower", 1, 1, "lower(text)"],
+    ["replace", 3, 3, "replace(text, old, new)"],
+    ["starts_with", 2, 2, "starts_with(text, prefix)"],
+    ["ends_with", 2, 2, "ends_with(text, suffix)"],
+    ["load", 1, 1, "load(path)"],
+    ["load_error", 1, 1, "load_error(path)"],
+]
+builtin_names = []
+builtin_min_arguments = []
+builtin_max_arguments = []
+builtin_usages = []
+for entry in builtin_table
+    append(builtin_names, entry[0])
+    append(builtin_min_arguments, entry[1])
+    append(builtin_max_arguments, entry[2])
+    append(builtin_usages, entry[3])
 mutator_names = ["append", "pop", "insert", "remove", "clear", "reverse", "sort"]
+variadic_builtins = ["range", "round", "split"]
 
 # Compiler state (mutated in place by the code generator).
 name_counter = [0]
@@ -1133,6 +1427,13 @@ if length(arguments) != 2
     eprint("usage: Syger selfhost/compiler.sg <input.sg> <output.c>")
     exit(2)
 source_path = arguments[0]
+source_directory = ""
+slash_at = -1
+for position in range(length(source_path))
+    if char_at(source_path, position) == "/"
+        slash_at = position
+if slash_at >= 0
+    source_directory = substring(source_path, 0, slash_at + 1)
 output_path = arguments[1]
 source_text = read_file(source_path)
 scanned_tokens = scan_tokens(source_text)

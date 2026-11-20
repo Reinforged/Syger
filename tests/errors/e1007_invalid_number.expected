@@ -1,0 +1,6 @@
+error[E1007]: invalid number
+ --> tests/errors/e1007_invalid_number.sg:1:9
+  |
+1 | width = 3px
+  |         ^^^
+  = help: numbers look like 42, 3.14 or 1.5e3; names can't start with a digit

@@ -23,7 +23,7 @@ Codes are grouped by where the problem is found:
 | `E3xxx` | Names, types, and values. The native compiler reports name and call errors before the program runs; everything else is reported when the line runs. |
 | `E9xxx` | Bugs in Syger itself |
 
-Each `E1`–`E3` code has a test program in [`tests/errors/`](../tests/errors/) with its expected output.
+Every code a program can trigger has a test program in [`tests/errors/`](../tests/errors/) with its expected output (except E1001, which needs 64 nested blocks).
 
 | Code | Meaning |
 | --- | --- |
@@ -35,6 +35,8 @@ Each `E1`–`E3` code has a test program in [`tests/errors/`](../tests/errors/) 
 | [E1003](#e1003) | Unterminated string |
 | [E1004](#e1004) | Unexpected `!` |
 | [E1005](#e1005) | Unexpected character |
+| [E1006](#e1006) | Unknown escape in a string |
+| [E1007](#e1007) | Invalid number |
 | [E2001](#e2001) | Syntax error |
 | [E3001](#e3001) | Undefined variable |
 | [E3002](#e3002) | Undefined function |
@@ -43,7 +45,7 @@ Each `E1`–`E3` code has a test program in [`tests/errors/`](../tests/errors/) 
 | [E3005](#e3005) | `return` outside a function |
 | [E3006](#e3006) | Function defined twice |
 | [E3007](#e3007) | Index or range out of bounds |
-| [E3008](#e3008) | Indexing something that is not an array |
+| [E3008](#e3008) | Indexing something that is not an array or map |
 | [E3009](#e3009) | Index is not an integer |
 | [E3010](#e3010) | Array function needs a variable |
 | [E3011](#e3011) | Wrong argument type |
@@ -52,12 +54,18 @@ Each `E1`–`E3` code has a test program in [`tests/errors/`](../tests/errors/) 
 | [E3014](#e3014) | Modulo by zero |
 | [E3015](#e3015) | Condition is not a boolean |
 | [E3016](#e3016) | `not`, `and`, `or` need booleans |
-| [E3017](#e3017) | Unary minus needs an integer |
+| [E3017](#e3017) | Unary minus needs a number |
 | [E3018](#e3018) | Operator used on the wrong types |
 | [E3019](#e3019) | `chr` code out of range |
 | [E3020](#e3020) | File not found |
 | [E3021](#e3021) | File could not be read |
 | [E3022](#e3022) | `fail()` called |
+| [E3023](#e3023) | Key not found in map |
+| [E3024](#e3024) | Map key is not a string or integer |
+| [E3025](#e3025) | `for` over something that can't be looped over |
+| [E3026](#e3026) | Invalid data in an imported file |
+| [E3029](#e3029) | Text can't be converted to a number |
+| [E3030](#e3030) | Number can't be used for this operation |
 | [E9001](#e9001) | Internal error |
 
 ---
@@ -134,7 +142,7 @@ if not done       # ok
 
 ### E1005
 
-A character that isn't part of Syger's syntax, such as `$`, `@`, `{` or `;`.
+A character that isn't part of Syger's syntax, such as `$`, `@` or `;`.
 
 ```syger
 total = price $ 2
@@ -147,6 +155,19 @@ error[E1005]: unexpected character '$'
 2 | total = price $ 2
   |               ^
 ```
+
+### E1006
+
+A backslash in a string followed by a character Syger doesn't know. The supported escapes are `\n`, `\t`, `\r`, `\"` and `\\`.
+
+```syger
+path = "C:\docs"        # error: \d
+path = "C:\\docs"       # ok
+```
+
+### E1007
+
+A number with letters stuck to it, like `3px` or `2nd`. Names can't start with a digit.
 
 ---
 
@@ -269,7 +290,7 @@ Indexes start at 0, so the last element of `items` is `items[length(items) - 1]`
 
 ### E3008
 
-`[]` used on something that isn't an array.
+`[]` used on something that isn't an array or map.
 
 ```syger
 count = 5
@@ -277,14 +298,14 @@ print(count[0])
 ```
 
 ```
-error[E3008]: indexing requires an array (got integer)
+error[E3008]: indexing requires an array or map (got integer)
 ```
 
-To get a character from a string, use `char_at(text, i)`.
+Strings can be indexed for reading (`"abc"[1]` is `"b"`) but not assigned to.
 
 ### E3009
 
-An array index that isn't an integer. Syger arrays have no string keys.
+An array index that isn't an integer. For string keys, use a map.
 
 ```syger
 print(items["first"])
@@ -292,7 +313,7 @@ print(items["first"])
 
 ### E3010
 
-`append`, `pop`, `insert`, `remove`, `clear`, `reverse` and `sort` change an array in place, so their first argument must be something that can be changed: a variable or an element like `rows[0]`.
+`append`, `pop`, `insert`, `remove`, `clear`, `reverse` and `sort` change an array (or, for `remove`, a map) in place, so their first argument must be something that can be changed: a variable or an element like `rows[0]`.
 
 ```syger
 append([1, 2], 3)      # error: nothing to store the result in
@@ -310,14 +331,14 @@ print(length(42))
 ```
 
 ```
-error[E3011]: length requires a string or array (got integer)
+error[E3011]: length requires a string, array or map (got integer)
 ```
 
-Also raised by `join` on non-strings (convert items with `to_string` first), `sort`, `sum`, `min` and `max` on non-integers, and `fail` or `read_file` with a non-string.
+Also raised by `join` on non-strings (convert items with `to_string` first), `sort` on a mix of strings and numbers, `sum` on non-numbers, `keys` on a non-map, `range` with non-integers or a step of 0, and string functions like `split` or `upper` given something that isn't a string.
 
 ### E3012
 
-`pop`, `first`, `last`, `sum`, `min` or `max` on an empty array.
+`pop`, `first`, `last`, `min` or `max` on an empty array. (`sum([])` is 0.)
 
 ```syger
 queue = []
@@ -332,7 +353,7 @@ Check `length(queue) > 0` first.
 
 ### E3013
 
-Integer division by zero.
+Division by zero, for integers and floats alike.
 
 ```syger
 print(total / count)    # count is 0
@@ -344,7 +365,7 @@ print(total / count)    # count is 0
 
 ### E3015
 
-`if` and `while` conditions must be `true` or `false`. Syger doesn't treat numbers, strings or arrays as true or false.
+`if` and `while` conditions must be `true` or `false`. Syger doesn't treat numbers, strings, arrays or maps as true or false.
 
 ```syger
 if count            # error
@@ -361,11 +382,11 @@ print(not 5)
 
 ### E3017
 
-Unary minus on something that isn't an integer, e.g. `-"five"`.
+Unary minus on something that isn't a number, e.g. `-"five"`.
 
 ### E3018
 
-An operator used on types it doesn't support. `+` adds integers or joins strings, but can't mix them; `-`, `*`, `/`, `%`, `<`, `<=`, `>` and `>=` need integers.
+An operator used on types it doesn't support. `+` adds numbers, joins two strings, or joins two arrays, but can't mix them; `-`, `*`, `/` and `%` need numbers; `<`, `<=`, `>` and `>=` compare two numbers or two strings.
 
 ```syger
 name = "Syger"
@@ -390,7 +411,13 @@ error[E3018]: cannot use '+' on string and integer
 
 ### E3020
 
-`read_file` couldn't open the file. Paths are relative to the directory you run the program from, not to the `.sg` file.
+A file couldn't be opened. For `import`, the path is relative to the `.sg` file doing the import, and the native compiler reports this when compiling. For `read_file` and `load`, it is relative to the directory you run the program from.
+
+```
+error[E3020]: could not open 'tests/errors/data/missing.json'
+ --> e3020_import_missing.sg:1
+  = help: import paths are relative to the .sg file that imports them
+```
 
 ### E3021
 
@@ -413,6 +440,54 @@ if age < 0
 error[E3022]: age cannot be negative
  --> e3022_fail.sg:3
 ```
+
+### E3023
+
+A map doesn't have the key being read. The help line suggests a close key if there is one.
+
+```syger
+config = {"name": "demo", "port": 80}
+print(config["nmae"])
+```
+
+```
+error[E3023]: key 'nmae' not found in map
+  = help: did you mean 'name'?
+```
+
+Check with `contains(map, key)` first, or use `get(map, key, default)`. Assigning (`config["nmae"] = 1`) adds the key instead.
+
+### E3024
+
+Map keys must be strings or integers.
+
+### E3025
+
+`for` was given something that isn't an array, map, string or `range(...)`.
+
+```syger
+for i in 5          # error
+for i in range(5)   # ok
+```
+
+### E3026
+
+An imported file isn't valid for its format. The message gives the line in the data file:
+
+```
+error[E3026]: invalid data in data/broken.json:4: expected ',' or '}' in object
+ --> e3026_invalid_data.sg:1
+```
+
+With the native compiler this is reported at compile time. To check a file without stopping the program, use `load_error(path)`, which returns the message or `""`.
+
+### E3029
+
+`to_int` or `to_float` got text that isn't a number, like `to_int("42abc")`. `to_int` also refuses `"3.5"`; use `to_float` for that.
+
+### E3030
+
+A number that can't be used for the operation: `sqrt` of a negative number, or turning infinity or a huge float into an integer.
 
 ---
 

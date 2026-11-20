@@ -1,4 +1,4 @@
-error[E3011]: length requires a string or array (got integer)
+error[E3011]: length requires a string, array or map (got integer)
  --> tests/errors/e3011_wrong_argument_type.sg:1
   |
 1 | print(length(42))

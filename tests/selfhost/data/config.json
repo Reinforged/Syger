@@ -1,0 +1,9 @@
+{
+  "name": "Syger",
+  "version": 2,
+  "ratio": 0.75,
+  "debug": false,
+  "tags": ["fast", "small"],
+  "owner": {"name": "jef", "id": null},
+  "escaped": "line\n\"quoted\" é"
+}

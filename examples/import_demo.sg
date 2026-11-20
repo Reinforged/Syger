@@ -1,0 +1,21 @@
+# Imports data from JSON, CSV and a Python file, then summarises it.
+# Run it with ./Syger examples/import_demo.sg, or compile it with
+# ./scripts/sygerc and the data is baked into the executable.
+
+import "data/team.json" as team
+import "data/sales.csv" as sales
+import "data/settings.py" as settings
+
+print(team["team"] + " team:")
+for member in team["members"]
+    print("  " + member["name"] + " (" + member["role"] + ", since " + to_string(member["since"]) + ")")
+
+totals = {}
+for row in sales
+    region = settings["REGIONS"][row["region"]]
+    totals[region] = get(totals, region, 0) + row["amount"]
+
+print("Sales including tax:")
+for region in totals
+    with_tax = totals[region] * (1 + settings["TAX_RATE"])
+    print("  " + region + ": " + to_string(round(with_tax, 2)) + " " + settings["CURRENCY"])

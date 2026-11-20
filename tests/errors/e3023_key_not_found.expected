@@ -1,0 +1,6 @@
+error[E3023]: key 'nmae' not found in map
+ --> tests/errors/e3023_key_not_found.sg:2
+  |
+2 | print(config["nmae"])
+  |
+  = help: did you mean 'name'?

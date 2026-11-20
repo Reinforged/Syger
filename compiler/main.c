@@ -6,6 +6,7 @@
 #include "ast.h"
 #include "interpreter.h"
 #include "diagnostics.h"
+#include "builtins.h"
 
 static char *read_file(const char *path) {
     FILE *file = fopen(path, "rb");
@@ -47,6 +48,7 @@ int main(int argc, char **argv) {
     interpreter_set_arguments(argc - 2, argv + 2);
     char *source = read_file(argv[1]);
     diagnostics_set_source(argv[1], source);
+    builtins_set_script(argv[1]);
 
     Lexer lexer;
     lexer_init(&lexer, source);

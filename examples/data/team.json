@@ -1,0 +1,8 @@
+{
+  "team": "Platform",
+  "members": [
+    {"name": "Ana", "role": "lead", "since": 2019},
+    {"name": "Bo", "role": "engineer", "since": 2021},
+    {"name": "Cy", "role": "engineer", "since": 2023}
+  ]
+}

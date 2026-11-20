@@ -38,7 +38,15 @@ typedef enum {
     TOKEN_SLASH,
     TOKEN_PERCENT,
     TOKEN_LEFT_BRACKET,
-    TOKEN_RIGHT_BRACKET
+    TOKEN_RIGHT_BRACKET,
+    TOKEN_LEFT_BRACE,
+    TOKEN_RIGHT_BRACE,
+    TOKEN_COLON,
+    TOKEN_FLOAT,
+    TOKEN_FOR,
+    TOKEN_IN,
+    TOKEN_IMPORT,
+    TOKEN_AS
 } TokenType;
 
 typedef struct {
@@ -58,6 +66,7 @@ typedef struct {
     int indent_count;
     int pending_dedents;
     int at_line_start;
+    int bracket_depth; /* inside (), [] or {} newlines and indentation are ignored */
 } Lexer;
 
 void lexer_init(Lexer *lexer, const char *source);

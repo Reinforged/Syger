@@ -1,0 +1,3 @@
+path = "C:\\docs\\new"
+print(path)
+bad = "C:\docs"

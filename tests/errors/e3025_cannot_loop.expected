@@ -1,0 +1,6 @@
+error[E3025]: cannot loop over integer
+ --> tests/errors/e3025_cannot_loop.sg:2
+  |
+2 | for i in count
+  |
+  = help: for works on arrays, maps (their keys), strings (their characters) and range(...)

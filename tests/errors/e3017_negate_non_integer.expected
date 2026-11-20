@@ -1,4 +1,4 @@
-error[E3017]: unary minus requires an integer (got string)
+error[E3017]: unary minus requires a number (got string)
  --> tests/errors/e3017_negate_non_integer.sg:1
   |
 1 | print(-"five")

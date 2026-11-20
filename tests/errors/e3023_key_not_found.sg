@@ -1,0 +1,2 @@
+config = {"name": "demo", "port": 80}
+print(config["nmae"])

@@ -1,0 +1,5 @@
+error[E3030]: sqrt of a negative number (-4)
+ --> tests/errors/e3030_invalid_number.sg:1
+  |
+1 | print(sqrt(-4))
+  |

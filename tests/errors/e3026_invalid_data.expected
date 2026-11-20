@@ -1,0 +1,6 @@
+error[E3026]: invalid data in tests/errors/data/broken.json:4: expected ',' or '}' in object
+ --> tests/errors/e3026_invalid_data.sg:1
+  |
+1 | import "data/broken.json" as config
+  |
+  = help: fix the file; load_error(path) checks a file without stopping the program

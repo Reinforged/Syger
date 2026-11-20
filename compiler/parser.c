@@ -1,6 +1,7 @@
 #include "parser.h"
 #include "diagnostics.h"
 
+#include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -86,13 +87,24 @@ static AstNode *parse_string(Parser *parser)
         exit(1);
     }
 
-    memcpy(
-        value,
-        parser->previous.start + 1,
-        (size_t)length
-    );
+    /* Decode escapes; the lexer has already rejected unknown ones. */
+    const char *raw = parser->previous.start + 1;
+    int out = 0;
 
-    value[length] = '\0';
+    for (int i = 0; i < length; i++)
+    {
+        char c = raw[i];
+
+        if (c == '\\' && i + 1 < length)
+        {
+            char e = raw[++i];
+            c = e == 'n' ? '\n' : e == 't' ? '\t' : e == 'r' ? '\r' : e;
+        }
+
+        value[out++] = c;
+    }
+
+    value[out] = '\0';
 
     AstNode *node = ast_create_string(value);
 
@@ -101,15 +113,44 @@ static AstNode *parse_string(Parser *parser)
     return node;
 }
 
+/* Number text without the _ separators (1_000_000). */
+static char *number_text(Token token)
+{
+    char *text = token_to_string(token);
+    int out = 0;
+
+    for (int i = 0; text[i] != '\0'; i++)
+    {
+        if (text[i] != '_')
+        {
+            text[out++] = text[i];
+        }
+    }
+
+    text[out] = '\0';
+    return text;
+}
+
 static AstNode *parse_integer(Parser *parser)
 {
-    char *text = token_to_string(parser->previous);
+    char *text = number_text(parser->previous);
 
     long value = strtol(text, NULL, 10);
 
     free(text);
 
     return ast_create_integer(value);
+}
+
+static AstNode *parse_float(Parser *parser)
+{
+    char *text = number_text(parser->previous);
+
+    double value = strtod(text, NULL);
+
+    free(text);
+
+    return ast_create_float(value);
 }
 
 static AstNode *parse_call(Parser *parser);
@@ -121,9 +162,8 @@ static AstNode *parse_array(Parser *parser)
     AstNode **elements = NULL;
     int count = 0;
 
-    if (parser->current.type != TOKEN_RIGHT_BRACKET)
+    while (parser->current.type != TOKEN_RIGHT_BRACKET)
     {
-        while (1)
         {
             AstNode *element = parse_expression(parser);
 
@@ -158,6 +198,51 @@ static AstNode *parse_array(Parser *parser)
     );
 
     return ast_create_array(elements, count);
+}
+
+static void *grow_array(void *items, int count, size_t size)
+{
+    void *grown = realloc(items, size * (size_t)(count + 1));
+
+    if (grown == NULL)
+    {
+        fprintf(stderr, "Syger: out of memory.\n");
+        exit(1);
+    }
+
+    return grown;
+}
+
+/* {key: value, ...}, possibly spread over several lines, trailing comma allowed. */
+static AstNode *parse_map(Parser *parser)
+{
+    AstNode **keys = NULL;
+    AstNode **values = NULL;
+    int count = 0;
+
+    while (parser->current.type != TOKEN_RIGHT_BRACE)
+    {
+        AstNode *key = parse_expression(parser);
+        consume(parser, TOKEN_COLON, "Expected ':' after map key.");
+        AstNode *value = parse_expression(parser);
+
+        keys = grow_array(keys, count, sizeof(AstNode *));
+        values = grow_array(values, count, sizeof(AstNode *));
+        keys[count] = key;
+        values[count] = value;
+        count++;
+
+        if (parser->current.type != TOKEN_COMMA)
+        {
+            break;
+        }
+
+        advance(parser);
+    }
+
+    consume(parser, TOKEN_RIGHT_BRACE, "Expected '}' after map entries.");
+
+    return ast_create_map(keys, values, count);
 }
 
 static AstNode *parse_postfix(Parser *parser, AstNode *node)
@@ -208,6 +293,20 @@ static AstNode *parse_primary(Parser *parser)
     {
         advance(parser);
         node = parse_integer(parser);
+        return parse_postfix(parser, node);
+    }
+
+    if (parser->current.type == TOKEN_FLOAT)
+    {
+        advance(parser);
+        node = parse_float(parser);
+        return parse_postfix(parser, node);
+    }
+
+    if (parser->current.type == TOKEN_LEFT_BRACE)
+    {
+        advance(parser);
+        node = parse_map(parser);
         return parse_postfix(parser, node);
     }
 
@@ -478,9 +577,8 @@ static AstNode *parse_call(Parser *parser)
     AstNode **arguments = NULL;
     int argument_count = 0;
 
-    if (parser->current.type != TOKEN_RIGHT_PAREN)
+    while (parser->current.type != TOKEN_RIGHT_PAREN)
     {
-        while (1)
         {
             AstNode *argument = parse_expression(parser);
 
@@ -552,6 +650,93 @@ static AstNode *parse_return(Parser *parser);
 static AstNode *parse_break(void);
 static AstNode *parse_continue(void);
 
+static AstNode *parse_block(Parser *parser);
+
+/* for name in iterable */
+static AstNode *parse_for(Parser *parser)
+{
+    if (parser->current.type != TOKEN_IDENTIFIER)
+    {
+        parser_error(parser, "Expected a variable name after 'for'.");
+    }
+
+    advance(parser);
+    char *name = token_to_string(parser->previous);
+
+    consume(parser, TOKEN_IN, "Expected 'in' after the for loop variable.");
+
+    AstNode *iterable = parse_expression(parser);
+    AstNode *body = parse_block(parser);
+    AstNode *node = ast_create_for(name, iterable, body);
+
+    free(name);
+    return node;
+}
+
+/* import "path" [as name]  ->  name = <import "path"> */
+static AstNode *parse_import(Parser *parser)
+{
+    if (parser->current.type != TOKEN_STRING)
+    {
+        parser_error(parser, "Expected a file path in quotes after 'import'.");
+    }
+
+    advance(parser);
+    AstNode *path_node = parse_string(parser);
+    char *path = path_node->string.value;
+    char *name = NULL;
+
+    if (parser->current.type == TOKEN_AS)
+    {
+        advance(parser);
+
+        if (parser->current.type != TOKEN_IDENTIFIER)
+        {
+            parser_error(parser, "Expected a name after 'as'.");
+        }
+
+        advance(parser);
+        name = token_to_string(parser->previous);
+    }
+    else
+    {
+        /* Default name: the file name without directory or extension. */
+        const char *base = strrchr(path, '/');
+        base = base ? base + 1 : path;
+        size_t length = strcspn(base, ".");
+        int valid = length > 0 && !isdigit((unsigned char)base[0]);
+
+        for (size_t i = 0; i < length; i++)
+        {
+            if (!isalnum((unsigned char)base[i]) && base[i] != '_')
+            {
+                valid = 0;
+            }
+        }
+
+        if (!valid)
+        {
+            parser_error(parser, "This file name can't be used as a variable name; add 'as name'.");
+        }
+
+        name = malloc(length + 1);
+
+        if (name == NULL)
+        {
+            fprintf(stderr, "Syger: out of memory.\n");
+            exit(1);
+        }
+
+        memcpy(name, base, length);
+        name[length] = '\0';
+    }
+
+    AstNode *node = ast_create_variable_declaration(name, ast_create_import(path));
+    free(name);
+    ast_free(path_node);
+    return node;
+}
+
 static AstNode *parse_block(Parser *parser)
 {
     if (parser->current.type != TOKEN_INDENT)
@@ -612,6 +797,20 @@ static AstNode *parse_block(Parser *parser)
         {
             advance(parser);
             add_statement(block, line, parse_while(parser));
+            continue;
+        }
+
+        if (parser->current.type == TOKEN_FOR)
+        {
+            advance(parser);
+            add_statement(block, line, parse_for(parser));
+            continue;
+        }
+
+        if (parser->current.type == TOKEN_IMPORT)
+        {
+            advance(parser);
+            add_statement(block, line, parse_import(parser));
             continue;
         }
 
@@ -844,6 +1043,20 @@ AstNode *parser_parse(Parser *parser)
         {
             advance(parser);
             add_statement(program, line, parse_while(parser));
+            continue;
+        }
+
+        if (parser->current.type == TOKEN_FOR)
+        {
+            advance(parser);
+            add_statement(program, line, parse_for(parser));
+            continue;
+        }
+
+        if (parser->current.type == TOKEN_IMPORT)
+        {
+            advance(parser);
+            add_statement(program, line, parse_import(parser));
             continue;
         }
     

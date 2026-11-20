@@ -116,6 +116,51 @@ static AstNode *ast_alloc_node(void)
     return node;
 }
 
+static AstNode *ast_new(AstNodeType type)
+{
+    AstNode *node = ast_alloc_node();
+
+    if (node == NULL) {
+        fprintf(stderr, "Out of memory.\n");
+        exit(1);
+    }
+
+    node->type = type;
+    return node;
+}
+
+AstNode *ast_create_float(double value)
+{
+    AstNode *node = ast_new(AST_FLOAT);
+    node->floating.value = value;
+    return node;
+}
+
+AstNode *ast_create_map(AstNode **keys, AstNode **values, int count)
+{
+    AstNode *node = ast_new(AST_MAP);
+    node->map.keys = keys;
+    node->map.values = values;
+    node->map.count = count;
+    return node;
+}
+
+AstNode *ast_create_for(const char *variable, AstNode *iterable, AstNode *body)
+{
+    AstNode *node = ast_new(AST_FOR);
+    node->for_statement.variable = ast_intern(variable);
+    node->for_statement.iterable = iterable;
+    node->for_statement.body = body;
+    return node;
+}
+
+AstNode *ast_create_import(const char *path)
+{
+    AstNode *node = ast_new(AST_IMPORT);
+    node->import.path = copy_string(path);
+    return node;
+}
+
 AstNode *ast_create_program(void) {
     AstNode *node = ast_alloc_node();
 
@@ -638,6 +683,30 @@ void ast_print(AstNode *node, int indent) {
             );
             break;
 
+        case AST_FLOAT:
+            printf("Float(%g)\n", node->floating.value);
+            break;
+
+        case AST_MAP:
+            printf("MapLiteral\n");
+
+            for (int i = 0; i < node->map.count; i++)
+            {
+                ast_print(node->map.keys[i], indent + 1);
+                ast_print(node->map.values[i], indent + 1);
+            }
+            break;
+
+        case AST_FOR:
+            printf("For(%s)\n", node->for_statement.variable);
+            ast_print(node->for_statement.iterable, indent + 1);
+            ast_print(node->for_statement.body, indent + 1);
+            break;
+
+        case AST_IMPORT:
+            printf("Import(%s)\n", node->import.path);
+            break;
+
         case AST_ARRAY:
             printf("ArrayLiteral\n");
 
@@ -799,6 +868,28 @@ void ast_free(AstNode *node)
                 ast_free(node->array.elements[i]);
             }
             free(node->array.elements);
+            break;
+
+        case AST_FLOAT:
+            break;
+
+        case AST_MAP:
+            for (int i = 0; i < node->map.count; i++)
+            {
+                ast_free(node->map.keys[i]);
+                ast_free(node->map.values[i]);
+            }
+            free(node->map.keys);
+            free(node->map.values);
+            break;
+
+        case AST_FOR:
+            ast_free(node->for_statement.iterable);
+            ast_free(node->for_statement.body);
+            break;
+
+        case AST_IMPORT:
+            free(node->import.path);
             break;
 
         case AST_INDEX:

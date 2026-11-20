@@ -59,6 +59,12 @@ To inspect the generated C as well, set `SYGER_KEEP_C=1` when invoking
 `scripts/sygerc`; it prints the temporary directory containing `program.c`.
 
 The CLI accepts arguments after the `.sg` script path; `args()` returns those
-arguments. The compiler uses `read_file`, `write_file`, `char_at`, `substring`,
-`token_at`, `type_of`, `to_string`, `chr`, and `fail` as bootstrap/runtime
-primitives.
+arguments. The compiler is an ordinary Syger program, so it can only use what
+the stage0 interpreter supports: `for` loops, arrays, and builtins such as
+`read_file`, `write_file`, `char_at`, `substring`, `replace`, `starts_with`,
+`load_error`, `eprint` and `exit`. Any feature added to the language has to
+work in the interpreter before the compiler can use it.
+
+`import` is compiled by reading and checking the data file at compile time
+and embedding its text in the generated C; the program parses it with the same
+parsers as the interpreter (`compiler/data.c`, included by the runtime).

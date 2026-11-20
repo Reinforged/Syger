@@ -1,0 +1,2 @@
+answer = "42abc"
+print(to_int(answer))

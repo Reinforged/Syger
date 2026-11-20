@@ -22,7 +22,11 @@ typedef enum {
     AST_CONTINUE,
     AST_ARRAY,
     AST_INDEX,
-    AST_INDEX_ASSIGNMENT
+    AST_INDEX_ASSIGNMENT,
+    AST_FLOAT,
+    AST_MAP,
+    AST_FOR,
+    AST_IMPORT
 } AstNodeType;
 
 typedef struct AstNode AstNode;
@@ -113,6 +117,26 @@ struct AstNode {
             AstNode *index;
             AstNode *value;
         } index_assignment;
+
+        struct {
+            double value;
+        } floating;
+
+        struct {
+            AstNode **keys;
+            AstNode **values;
+            int count;
+        } map;
+
+        struct {
+            char *variable;
+            AstNode *iterable;
+            AstNode *body;
+        } for_statement;
+
+        struct {
+            char *path;
+        } import;
     };
 };
 
@@ -182,6 +206,11 @@ AstNode *ast_create_index_assignment(
     AstNode *index,
     AstNode *value
 );
+AstNode *ast_create_float(double value);
+AstNode *ast_create_map(AstNode **keys, AstNode **values, int count);
+AstNode *ast_create_for(const char *variable, AstNode *iterable, AstNode *body);
+/* The value of `import "path" as name`; the parser wraps it in an assignment. */
+AstNode *ast_create_import(const char *path);
 void ast_print(AstNode *node, int indent);
 void ast_free(AstNode *node);
 

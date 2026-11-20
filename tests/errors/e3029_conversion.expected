@@ -1,0 +1,5 @@
+error[E3029]: to_int can't convert "42abc" to an integer
+ --> tests/errors/e3029_conversion.sg:2
+  |
+2 | print(to_int(answer))
+  |

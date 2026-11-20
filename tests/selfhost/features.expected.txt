@@ -1,0 +1,104 @@
+--- maps ---
+{name: jef, age: 30}
+jef
+{name: jef, age: 31, city: Gent}
+3
+[name, age, city]
+[jef, 31, Gent]
+true
+false
+none given
+-1
+jef
+ana
+{list: [1, 2, 3], inner: {x: 1, y: 2}}
+[1, 2, 3]
+{inner: {x: 1, y: 2}}
+two
+true
+map
+{k: [1, 2.5]}
+--- floats ---
+3.14
+1500.0
+1000000
+3
+3.5
+1.0
+0.30000000000000004
+3.0
+-2.5
+true
+true
+float
+3.25
+43
+3
+3
+3.14
+-2
+2
+4
+4.5
+4.0
+3.5
+0
+1.5
+pear
+--- strings ---
+tab:	end
+quote: "hi" and backslash: \
+3
+[a, b, , c]
+[lots, of, space]
+padded
+SYGER
+syger
+a+b+c
+true
+false
+true
+3
+b
+true
+[1, 2, 3]
+[apple, fig, pear]
+[1.5, 2, 3]
+--- for ---
+10
+20
+30
+0
+1
+2
+10
+6
+2
+x
+y
+h
+e
+y
+25
+[1, 2, 3, 10, 20, 30]
+[2, 3, 4]
+8
+none
+--- import ---
+Syger
+3
+0.75
+small
+{name: jef, id: none}
+line
+"quoted" é
+3
+Ana 31 Gent 09000
+Bo, Jr. 27 New "York" 10001
+Cy 40.5 Leuven 3000
+[{player: ana, points: 12}, {player: bo, points: 7}]
+{API_URL: https://example.test/api, TIMEOUT: 30, NAME: Syger "dev", SINGLE: raw \n text, EMPTY: , TRAILING: value}
+{MAX_SIZE: 1000, RATE: 0.5, NAME: syger-lang, COLORS: [red, green, blue], LIMITS: {low: 1, high: [10, 20], 3: none}, FLAGS: [true, false], SINGLE: [42], HEX: 255, NEG: -325.0}
+[hello, world]
+true
+could not open 'missing.json'

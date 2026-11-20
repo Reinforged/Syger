@@ -1,9 +1,11 @@
 #include "interpreter.h"
 #include "value.h"
 #include "diagnostics.h"
+#include "builtins.h"
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <math.h>
 #include <string.h>
 #include <errno.h>
 
@@ -289,19 +291,6 @@ static void define_function(
     environment->function_count++;
 }
 
-static const char *value_type_name(ValueType type)
-{
-    switch (type)
-    {
-        case VALUE_STRING: return "string";
-        case VALUE_INT: return "integer";
-        case VALUE_BOOL: return "boolean";
-        case VALUE_NONE: return "none";
-        case VALUE_ARRAY: return "array";
-    }
-
-    return "value";
-}
 
 static const char *operator_symbol(TokenType operator)
 {
@@ -329,7 +318,7 @@ _Noreturn static void operand_type_error(
     ValueType right
 )
 {
-    const char *help = "arithmetic and comparisons like < need two integers";
+    const char *help = "arithmetic needs two numbers; < > <= >= compare two numbers or two strings";
 
     if (operator == TOKEN_PLUS && (left == VALUE_STRING || right == VALUE_STRING))
     {
@@ -339,7 +328,7 @@ _Noreturn static void operand_type_error(
     }
     else if (operator == TOKEN_PLUS)
     {
-        help = "+ adds two integers or joins two strings";
+        help = "+ adds numbers, or joins two strings or two arrays";
     }
 
     diagnostics_runtime_errorf(
@@ -377,15 +366,13 @@ _Noreturn static void index_error(long index, int count)
 /* Usage strings for builtins, shown when they get the wrong arguments. */
 static const char *const builtin_usages[][2] = {
     {"print", "print(value, ...)"}, {"eprint", "eprint(value, ...)"},
-    {"length", "length(text_or_array)"}, {"append", "append(array, value)"},
+    {"length", "length(text_array_or_map)"}, {"append", "append(array, value)"},
     {"pop", "pop(array)"}, {"insert", "insert(array, index, value)"},
-    {"remove", "remove(array, index)"}, {"contains", "contains(array, value)"},
-    {"index_of", "index_of(array, value)"}, {"clear", "clear(array)"},
+    {"remove", "remove(array_or_map, index_or_key)"}, {"clear", "clear(array)"},
     {"reverse", "reverse(array)"}, {"sort", "sort(array)"},
     {"slice", "slice(array, start, end)"}, {"join", "join(array, separator)"},
-    {"sum", "sum(array)"}, {"min", "min(array)"}, {"max", "max(array)"},
     {"first", "first(array)"}, {"last", "last(array)"}, {"args", "args()"},
-    {"token_at", "token_at(array, index)"}, {"type_of", "type_of(value)"},
+    {"token_at", "token_at(array, index)"},
     {"fail", "fail(message)"}, {"to_string", "to_string(value)"},
     {"chr", "chr(code)"}, {"read_file", "read_file(path)"},
     {"write_file", "write_file(path, text)"}, {"char_at", "char_at(text, index)"},
@@ -402,7 +389,8 @@ static const char *builtin_usage(const char *name)
         }
     }
 
-    return name;
+    const char *usage = builtin_usage_text(name);
+    return usage ? usage : name;
 }
 
 static void check_builtin_arity(AstNode *node, int expected)
@@ -541,6 +529,98 @@ static Value evaluate(
     Environment *environment
 );
 
+_Noreturn static void key_error(const Value *map, const Value *key)
+{
+    if (key->type == VALUE_STRING)
+    {
+        const char *candidates[256];
+        int count = 0;
+
+        for (int i = 0; i < value_map_count(map) && count < 256; i++)
+        {
+            const Value *candidate = value_map_key_at(map, i);
+
+            if (candidate->type == VALUE_STRING)
+            {
+                candidates[count++] = candidate->string;
+            }
+        }
+
+        const char *closest = diagnostics_closest_name(key->string, candidates, count);
+        char help[320];
+
+        if (closest != NULL)
+        {
+            snprintf(help, sizeof(help), "did you mean '%s'?", closest);
+        }
+        else
+        {
+            snprintf(help, sizeof(help), "use contains(map, key) to check first, or get(map, key, default)");
+        }
+
+        diagnostics_runtime_errorf("E3023", help, "key '%s' not found in map", key->string);
+    }
+
+    diagnostics_runtime_errorf("E3023", "use contains(map, key) to check first, or get(map, key, default)", "key %ld not found in map", key->integer);
+}
+
+/*
+ * Finds container[index] for arrays and maps. With mutable the container
+ * is made unique first (copy-on-write); with insert a missing map key is
+ * added (for m[key] = value). Consumes index.
+ */
+static Value *index_place(Value *container, Value index, int mutable, int insert)
+{
+    if (container->type == VALUE_MAP)
+    {
+        if (!value_is_map_key(&index))
+        {
+            diagnostics_runtime_errorf("E3024", NULL, "map keys must be strings or integers (got %s)", value_type_name(index.type));
+        }
+
+        if (insert)
+        {
+            return value_map_slot(container, index);
+        }
+
+        if (value_map_find(container, &index) == NULL)
+        {
+            key_error(container, &index);
+        }
+
+        if (mutable)
+        {
+            value_map_make_unique(container);
+        }
+
+        Value *found = value_map_find(container, &index);
+        value_free(&index);
+        return found;
+    }
+
+    if (container->type != VALUE_ARRAY)
+    {
+        diagnostics_runtime_errorf("E3008", NULL, "indexing requires an array or map (got %s)", value_type_name(container->type));
+    }
+
+    if (index.type != VALUE_INT)
+    {
+        diagnostics_runtime_errorf("E3009", NULL, "array index must be an integer (got %s)", value_type_name(index.type));
+    }
+
+    if (index.integer < 0 || index.integer >= container->array.count)
+    {
+        index_error(index.integer, container->array.count);
+    }
+
+    if (mutable)
+    {
+        value_array_make_unique(container);
+    }
+
+    return &container->array.elements[index.integer];
+}
+
 static Value *resolve_array_element(
     AstNode *node,
     Environment *environment,
@@ -566,85 +646,18 @@ static Value *resolve_array_element(
     {
         Value index = evaluate(node->index.index, environment);
 
-        Value *array = resolve_array_element(
+        Value *container = resolve_array_element(
             node->index.array,
             environment,
             mutable
         );
 
-        if (array->type != VALUE_ARRAY)
-        {
-            value_free(&index);
-            diagnostics_runtime_errorf("E3008", NULL, "indexing requires an array (got %s)", value_type_name(array->type));
-        }
-
-        if (index.type != VALUE_INT)
-        {
-            value_free(&index);
-            diagnostics_runtime_errorf("E3009", NULL, "array index must be an integer (got %s)", value_type_name(index.type));
-        }
-
-        if (index.integer < 0 || index.integer >= array->array.count)
-        {
-            index_error(index.integer, array->array.count);
-        }
-
-        if (mutable)
-        {
-            value_array_make_unique(array);
-        }
-
-        Value *element = &array->array.elements[index.integer];
-        value_free(&index);
-        return element;
+        return index_place(container, index, mutable, 0);
     }
 
     diagnostics_runtime_errorf("E3011", "Pass an array value.", "array assignment requires an array expression.\n");
 }
 
-static int value_equals(const Value *left, const Value *right)
-{
-    if (left->type != right->type)
-    {
-        return 0;
-    }
-
-    switch (left->type)
-    {
-        case VALUE_STRING:
-            return strcmp(left->string, right->string) == 0;
-
-        case VALUE_INT:
-            return left->integer == right->integer;
-
-        case VALUE_BOOL:
-            return left->boolean == right->boolean;
-
-        case VALUE_NONE:
-            return 1;
-
-        case VALUE_ARRAY:
-            if (left->array.count != right->array.count)
-            {
-                return 0;
-            }
-
-            for (int i = 0; i < left->array.count; i++)
-            {
-                if (!value_equals(
-                    &left->array.elements[i],
-                    &right->array.elements[i]
-                ))
-                {
-                    return 0;
-                }
-            }
-
-            return 1;
-    }
-
-    return 0;
-}
 
 static Value *require_array_argument(
     AstNode *node,
@@ -662,7 +675,7 @@ static Value *require_array_argument(
 
     if (value->type != VALUE_ARRAY)
     {
-        diagnostics_runtime_errorf("E3011", "Pass an array value.", "%s requires an array.", name);
+        diagnostics_runtime_errorf("E3011", NULL, "%s requires an array (got %s)", name, value_type_name(value->type));
     }
 
     value_array_make_unique(value);
@@ -717,7 +730,8 @@ static Value evaluate_array_builtin(
             Value *value = resolve_array_element(argument, environment, 0);
             if (value->type == VALUE_ARRAY) return value_int(value->array.count);
             if (value->type == VALUE_STRING) return value_int((long)value_string_length(value));
-            diagnostics_runtime_errorf("E3011", NULL, "length requires a string or array (got %s)", value_type_name(value->type));
+            if (value->type == VALUE_MAP) return value_int(value_map_count(value));
+            diagnostics_runtime_errorf("E3011", NULL, "length requires a string, array or map (got %s)", value_type_name(value->type));
         }
 
         Value value = evaluate(argument, environment);
@@ -727,14 +741,14 @@ static Value evaluate_array_builtin(
             value_free(&value);
             return value_int(count);
         }
-        if (value.type == VALUE_STRING)
+        if (value.type == VALUE_STRING || value.type == VALUE_MAP)
         {
-            size_t count = value_string_length(&value);
+            long count = value.type == VALUE_MAP ? value_map_count(&value) : (long)value_string_length(&value);
             value_free(&value);
-            return value_int((long)count);
+            return value_int(count);
         }
         value_free(&value);
-        diagnostics_runtime_errorf("E3011", NULL, "length requires a string or array (got %s)", value_type_name(value.type));
+        diagnostics_runtime_errorf("E3011", NULL, "length requires a string, array or map (got %s)", value_type_name(value.type));
     }
 
     if (strcmp(name, "append") == 0)
@@ -812,6 +826,24 @@ static Value evaluate_array_builtin(
     {
         check_builtin_arity(node, 2);
 
+        AstNode *target_node = node->call.arguments[0];
+
+        if ((target_node->type == AST_VARIABLE_REFERENCE || target_node->type == AST_INDEX) &&
+            resolve_array_element(target_node, environment, 0)->type == VALUE_MAP)
+        {
+            Value key = evaluate(node->call.arguments[1], environment);
+            Value *map = resolve_array_element(target_node, environment, 1);
+            Value removed;
+
+            if (!value_map_remove(map, &key, &removed))
+            {
+                key_error(map, &key);
+            }
+
+            value_free(&key);
+            return removed;
+        }
+
         Value *array = require_array_argument(
             node->call.arguments[0],
             environment,
@@ -833,66 +865,6 @@ static Value evaluate_array_builtin(
         array->array.count--;
 
         return result;
-    }
-
-    if (strcmp(name, "contains") == 0)
-    {
-        check_builtin_arity(node, 2);
-
-        Value array = evaluate(node->call.arguments[0], environment);
-        Value value = evaluate(node->call.arguments[1], environment);
-
-        if (array.type != VALUE_ARRAY)
-        {
-            value_free(&array);
-            value_free(&value);
-            diagnostics_runtime_errorf("E3011", "Pass an array value.", "contains requires an array.\n");
-        }
-
-        int found = 0;
-
-        for (int i = 0; i < array.array.count; i++)
-        {
-            if (value_equals(&array.array.elements[i], &value))
-            {
-                found = 1;
-                break;
-            }
-        }
-
-        value_free(&array);
-        value_free(&value);
-        return value_bool(found);
-    }
-
-    if (strcmp(name, "index_of") == 0)
-    {
-        check_builtin_arity(node, 2);
-
-        Value array = evaluate(node->call.arguments[0], environment);
-        Value value = evaluate(node->call.arguments[1], environment);
-
-        if (array.type != VALUE_ARRAY)
-        {
-            value_free(&array);
-            value_free(&value);
-            diagnostics_runtime_errorf("E3011", "Pass an array value.", "index_of requires an array.\n");
-        }
-
-        long index = -1;
-
-        for (int i = 0; i < array.array.count; i++)
-        {
-            if (value_equals(&array.array.elements[i], &value))
-            {
-                index = i;
-                break;
-            }
-        }
-
-        value_free(&array);
-        value_free(&value);
-        return value_int(index);
     }
 
     if (strcmp(name, "clear") == 0)
@@ -1038,68 +1010,6 @@ static Value evaluate_array_builtin(
         return value;
     }
 
-    if (strcmp(name, "sum") == 0 ||
-        strcmp(name, "min") == 0 ||
-        strcmp(name, "max") == 0)
-    {
-        check_builtin_arity(node, 1);
-
-        Value array = evaluate(node->call.arguments[0], environment);
-
-        if (array.type != VALUE_ARRAY)
-        {
-            value_free(&array);
-            diagnostics_runtime_errorf("E3011", "Pass an array value.", "array reduction requires an array.\n");
-        }
-
-        if (array.array.count == 0)
-        {
-            value_free(&array);
-            diagnostics_runtime_errorf("E3012", "check length(array) > 0 first", "array reduction requires a non-empty array.\n");
-        }
-
-        for (int i = 0; i < array.array.count; i++)
-        {
-            if (array.array.elements[i].type != VALUE_INT)
-            {
-                value_free(&array);
-                diagnostics_runtime_errorf("E3011", "Pass an array value.", "array reduction requires an array of integers.\n");
-            }
-        }
-
-        long result = array.array.elements[0].integer;
-
-        if (strcmp(name, "sum") == 0)
-        {
-            result = 0;
-
-            for (int i = 0; i < array.array.count; i++)
-            {
-                result += array.array.elements[i].integer;
-            }
-        }
-        else
-        {
-            for (int i = 1; i < array.array.count; i++)
-            {
-                if (strcmp(name, "min") == 0 &&
-                    array.array.elements[i].integer < result)
-                {
-                    result = array.array.elements[i].integer;
-                }
-
-                if (strcmp(name, "max") == 0 &&
-                    array.array.elements[i].integer > result)
-                {
-                    result = array.array.elements[i].integer;
-                }
-            }
-        }
-
-        value_free(&array);
-        return value_int(result);
-    }
-
     if (strcmp(name, "first") == 0 || strcmp(name, "last") == 0)
     {
         check_builtin_arity(node, 1);
@@ -1134,27 +1044,7 @@ static Value evaluate_array_builtin(
             "sort"
         );
 
-        for (int i = 0; i < array->array.count; i++)
-        {
-            if (array->array.elements[i].type != VALUE_INT)
-            {
-                diagnostics_runtime_errorf("E3011", "Pass an array value.", "sort currently requires an array of integers.\n");
-            }
-        }
-
-        for (int i = 0; i < array->array.count; i++)
-        {
-            for (int j = i + 1; j < array->array.count; j++)
-            {
-                if (array->array.elements[j].integer <
-                    array->array.elements[i].integer)
-                {
-                    Value temporary = array->array.elements[i];
-                    array->array.elements[i] = array->array.elements[j];
-                    array->array.elements[j] = temporary;
-                }
-            }
-        }
+        builtin_sort(array);
 
         return value_int(0);
     }
@@ -1208,24 +1098,6 @@ static Value evaluate_runtime_builtin(
         {
             result.array.elements[i] = value_string(runtime_arguments[i]);
         }
-        return result;
-    }
-
-    if (strcmp(name, "type_of") == 0)
-    {
-        check_builtin_arity(node, 1);
-        Value value = evaluate(node->call.arguments[0], environment);
-        const char *type_name = "none";
-        switch (value.type)
-        {
-            case VALUE_STRING: type_name = "string"; break;
-            case VALUE_INT: type_name = "integer"; break;
-            case VALUE_BOOL: type_name = "boolean"; break;
-            case VALUE_NONE: type_name = "none"; break;
-            case VALUE_ARRAY: type_name = "array"; break;
-        }
-        Value result = value_string(type_name);
-        value_free(&value);
         return result;
     }
 
@@ -1505,6 +1377,7 @@ enum
     CALL_RUNTIME_BUILTIN = 1,
     CALL_ARRAY_BUILTIN,
     CALL_PRINT,
+    CALL_PURE_BUILTIN,
     CALL_USER_FUNCTION
 };
 
@@ -1513,14 +1386,18 @@ static int is_runtime_builtin(const char *name);
 static int classify_call(const char *name)
 {
     static const char *const array_builtins[] = {
-        "length", "append", "pop", "insert", "remove", "contains",
-        "index_of", "clear", "reverse", "sort", "slice", "join", "sum",
-        "min", "max", "first", "last"
+        "length", "append", "pop", "insert", "remove",
+        "clear", "reverse", "sort", "slice", "join", "first", "last"
     };
 
     if (is_runtime_builtin(name))
     {
         return CALL_RUNTIME_BUILTIN;
+    }
+
+    if (builtin_exists(name))
+    {
+        return CALL_PURE_BUILTIN;
     }
 
     for (size_t i = 0; i < sizeof(array_builtins) / sizeof(array_builtins[0]); i++)
@@ -1543,7 +1420,6 @@ static int is_runtime_builtin(const char *name)
 {
     return strcmp(name, "args") == 0 ||
            strcmp(name, "token_at") == 0 ||
-           strcmp(name, "type_of") == 0 ||
            strcmp(name, "fail") == 0 ||
            strcmp(name, "to_string") == 0 ||
            strcmp(name, "chr") == 0 ||
@@ -1561,177 +1437,150 @@ static Value evaluate_index(
     Environment *environment
 )
 {
-    Value array = evaluate(array_node, environment);
+    Value container = evaluate(array_node, environment);
     Value index = evaluate(index_node, environment);
 
-    if (array.type != VALUE_ARRAY)
+    /* Strings can be indexed for reading: "abc"[1] is "b". */
+    if (container.type == VALUE_STRING && index.type == VALUE_INT)
     {
-        value_free(&array);
-        value_free(&index);
-        diagnostics_runtime_errorf("E3008", NULL, "indexing requires an array (got %s)", value_type_name(array.type));
+        long length = (long)value_string_length(&container);
+
+        if (index.integer < 0 || index.integer >= length)
+        {
+            diagnostics_runtime_errorf("E3007", length ? NULL : "the string is empty", "index %ld is out of bounds for a string of length %ld", index.integer, length);
+        }
+
+        Value result = value_string_n(container.string + index.integer, 1);
+        value_free(&container);
+        return result;
     }
 
-    if (index.type != VALUE_INT)
-    {
-        value_free(&array);
-        value_free(&index);
-        diagnostics_runtime_errorf("E3009", NULL, "array index must be an integer (got %s)", value_type_name(index.type));
-    }
-
-    if (index.integer < 0 || index.integer >= array.array.count)
-    {
-        index_error(index.integer, array.array.count);
-    }
-
-    Value result = value_copy(&array.array.elements[index.integer]);
-    value_free(&array);
-    value_free(&index);
+    Value result = value_copy(index_place(&container, index, 0, 0));
+    value_free(&container);
     return result;
+}
+
+static int is_number(const Value *value)
+{
+    return value->type == VALUE_INT || value->type == VALUE_FLOAT;
+}
+
+static double number_of(const Value *value)
+{
+    return value->type == VALUE_INT ? (double)value->integer : value->number;
 }
 
 /* Applies a binary operator (other than and/or) to evaluated operands. */
 static Value binary_values(AstNode *node, Value left, Value right)
 {
-    if (node->binary.operator == TOKEN_EQUAL_EQUAL ||
-        node->binary.operator == TOKEN_BANG_EQUAL)
+    TokenType operator = node->binary.operator;
+
+    if (operator == TOKEN_EQUAL_EQUAL || operator == TOKEN_BANG_EQUAL)
     {
-        int equal = value_equals(&left, &right);
+        int equal = value_equal(&left, &right);
         value_free(&left);
         value_free(&right);
-        return value_bool(
-            node->binary.operator == TOKEN_EQUAL_EQUAL ? equal : !equal
-        );
+        return value_bool(operator == TOKEN_EQUAL_EQUAL ? equal : !equal);
     }
 
-    if (left.type == VALUE_NONE &&
-        right.type == VALUE_NONE)
+    if (left.type == VALUE_INT && right.type == VALUE_INT)
     {
-        switch (node->binary.operator)
+        long a = left.integer;
+        long b = right.integer;
+
+        switch (operator)
         {
-            case TOKEN_EQUAL_EQUAL:
-                return value_bool(1);
-
-            case TOKEN_BANG_EQUAL:
-                return value_bool(0);
-
-            default:
-                value_free(&left);
-                value_free(&right);
-                operand_type_error("E3018", node->binary.operator, VALUE_NONE, VALUE_NONE);
+            case TOKEN_PLUS: return value_int(a + b);
+            case TOKEN_MINUS: return value_int(a - b);
+            case TOKEN_STAR: return value_int(a * b);
+            case TOKEN_SLASH:
+                if (b == 0) diagnostics_runtime_errorf("E3013", "check that the divisor is not zero before dividing", "division by zero");
+                return value_int(a / b);
+            case TOKEN_PERCENT:
+                if (b == 0) diagnostics_runtime_errorf("E3014", "check that the divisor is not zero before using %", "modulo by zero");
+                return value_int(a % b);
+            case TOKEN_LESS: return value_bool(a < b);
+            case TOKEN_LESS_EQUAL: return value_bool(a <= b);
+            case TOKEN_GREATER: return value_bool(a > b);
+            case TOKEN_GREATER_EQUAL: return value_bool(a >= b);
+            default: break;
         }
     }
 
-    if (left.type == VALUE_STRING &&
-        right.type == VALUE_STRING)
+    if (is_number(&left) && is_number(&right))
     {
-        switch (node->binary.operator)
+        double a = number_of(&left);
+        double b = number_of(&right);
+
+        switch (operator)
         {
-            case TOKEN_PLUS:
-            {
-                size_t left_length = value_string_length(&left);
-                size_t right_length = value_string_length(&right);
-
-                char *result = malloc(
-                    left_length + right_length + 1
-                );
-
-                if (result == NULL)
-                {
-                    diagnostics_fatal("E0003", "Out of memory.", "Close other applications or reduce the size of the input.");
-                }
-
-                memcpy(result, left.string, left_length);
-                memcpy(
-                    result + left_length,
-                    right.string,
-                    right_length + 1
-                );
-
-                Value value = value_string(result);
-                free(result);
-                value_free(&left);
-                value_free(&right);
-                return value;
-            }
-
-            case TOKEN_EQUAL_EQUAL:
-            {
-                int equal = strcmp(left.string, right.string) == 0;
-                value_free(&left);
-                value_free(&right);
-                return value_bool(equal);
-            }
-
-            case TOKEN_BANG_EQUAL:
-            {
-                int not_equal = strcmp(left.string, right.string) != 0;
-                value_free(&left);
-                value_free(&right);
-                return value_bool(not_equal);
-            }
-
-            default:
-                value_free(&left);
-                value_free(&right);
-                operand_type_error("E3018", node->binary.operator, VALUE_STRING, VALUE_STRING);
+            case TOKEN_PLUS: return value_float(a + b);
+            case TOKEN_MINUS: return value_float(a - b);
+            case TOKEN_STAR: return value_float(a * b);
+            case TOKEN_SLASH:
+                if (b == 0) diagnostics_runtime_errorf("E3013", "check that the divisor is not zero before dividing", "division by zero");
+                return value_float(a / b);
+            case TOKEN_PERCENT:
+                if (b == 0) diagnostics_runtime_errorf("E3014", "check that the divisor is not zero before using %", "modulo by zero");
+                return value_float(fmod(a, b));
+            case TOKEN_LESS: return value_bool(a < b);
+            case TOKEN_LESS_EQUAL: return value_bool(a <= b);
+            case TOKEN_GREATER: return value_bool(a > b);
+            case TOKEN_GREATER_EQUAL: return value_bool(a >= b);
+            default: break;
         }
     }
 
-    if (left.type != VALUE_INT || right.type != VALUE_INT)
+    if (left.type == VALUE_STRING && right.type == VALUE_STRING)
     {
-        operand_type_error("E3018", node->binary.operator, left.type, right.type);
+        if (operator == TOKEN_PLUS)
+        {
+            value_string_append(&left, &right);
+            value_free(&right);
+            return left;
+        }
+
+        int order = strcmp(left.string, right.string);
+        int result = -1;
+
+        switch (operator)
+        {
+            case TOKEN_LESS: result = order < 0; break;
+            case TOKEN_LESS_EQUAL: result = order <= 0; break;
+            case TOKEN_GREATER: result = order > 0; break;
+            case TOKEN_GREATER_EQUAL: result = order >= 0; break;
+            default: break;
+        }
+
+        if (result >= 0)
+        {
+            value_free(&left);
+            value_free(&right);
+            return value_bool(result);
+        }
     }
 
-    switch (node->binary.operator)
+    /* [1, 2] + [3] is [1, 2, 3]. */
+    if (operator == TOKEN_PLUS && left.type == VALUE_ARRAY && right.type == VALUE_ARRAY)
     {
-        case TOKEN_PLUS:
-            return value_int(left.integer + right.integer);
+        Value joined = value_array(left.array.count + right.array.count);
 
-        case TOKEN_MINUS:
-            return value_int(left.integer - right.integer);
+        for (int i = 0; i < left.array.count; i++)
+        {
+            joined.array.elements[i] = value_copy(&left.array.elements[i]);
+        }
 
-        case TOKEN_STAR:
-            return value_int(left.integer * right.integer);
+        for (int i = 0; i < right.array.count; i++)
+        {
+            joined.array.elements[left.array.count + i] = value_copy(&right.array.elements[i]);
+        }
 
-        case TOKEN_SLASH:
-            if (right.integer == 0)
-            {
-                diagnostics_runtime_errorf("E3013", "check that the divisor is not zero before dividing", "division by zero.\n");
-            }
-
-            return value_int(left.integer / right.integer);
-
-        case TOKEN_PERCENT:
-            if (right.integer == 0)
-            {
-                diagnostics_runtime_errorf("E3014", "check that the divisor is not zero before using %", "modulo by zero.\n");
-            }
-
-            return value_int(left.integer % right.integer);
-
-        case TOKEN_EQUAL_EQUAL:
-            return value_bool(left.integer == right.integer);
-
-        case TOKEN_BANG_EQUAL:
-            return value_bool(left.integer != right.integer);
-
-        case TOKEN_LESS:
-            return value_bool(left.integer < right.integer);
-
-        case TOKEN_LESS_EQUAL:
-            return value_bool(left.integer <= right.integer);
-
-        case TOKEN_GREATER:
-            return value_bool(left.integer > right.integer);
-
-        case TOKEN_GREATER_EQUAL:
-            return value_bool(left.integer >= right.integer);
-
-        default:
-            diagnostics_runtime_errorf("E9001", "Use a supported binary operator.", "unknown binary operator.\n");
+        value_free(&left);
+        value_free(&right);
+        return joined;
     }
 
-    return value_none();
+    operand_type_error("E3018", operator, left.type, right.type);
 }
 
 static Value evaluate_general(AstNode *node, Environment *environment);
@@ -1813,6 +1662,36 @@ static Value evaluate_general(
     Environment *environment
 )
 {
+    if (node->type == AST_FLOAT)
+    {
+        return value_float(node->floating.value);
+    }
+
+    if (node->type == AST_MAP)
+    {
+        Value map = value_map_new(node->map.count);
+
+        for (int i = 0; i < node->map.count; i++)
+        {
+            Value key = evaluate(node->map.keys[i], environment);
+
+            if (!value_is_map_key(&key))
+            {
+                diagnostics_runtime_errorf("E3024", NULL, "map keys must be strings or integers (got %s)", value_type_name(key.type));
+            }
+
+            Value value = evaluate(node->map.values[i], environment);
+            value_map_set(&map, key, value);
+        }
+
+        return map;
+    }
+
+    if (node->type == AST_IMPORT)
+    {
+        return builtin_import(node->import.path);
+    }
+
     if (node->type == AST_STRING)
     {
         return value_string(node->string.value);
@@ -1875,9 +1754,14 @@ static Value evaluate_general(
                 return value_bool(!operand.boolean);
 
             case TOKEN_MINUS:
+                if (operand.type == VALUE_FLOAT)
+                {
+                    return value_float(-operand.number);
+                }
+
                 if (operand.type != VALUE_INT)
                 {
-                    diagnostics_runtime_errorf("E3017", NULL, "unary minus requires an integer (got %s)", value_type_name(operand.type));
+                    diagnostics_runtime_errorf("E3017", NULL, "unary minus requires a number (got %s)", value_type_name(operand.type));
                 }
 
                 return value_int(-operand.integer);
@@ -1913,6 +1797,21 @@ static Value evaluate_general(
         if (node->call.kind == CALL_RUNTIME_BUILTIN)
         {
             return evaluate_runtime_builtin(node, environment);
+        }
+
+        if (node->call.kind == CALL_PURE_BUILTIN)
+        {
+            int count = node->call.argument_count;
+            Value arguments[8];
+
+            builtin_check_arity(node->call.name, count);
+
+            for (int i = 0; i < count; i++)
+            {
+                arguments[i] = evaluate(node->call.arguments[i], environment);
+            }
+
+            return builtin_call(node->call.name, arguments, count);
         }
 
         if (node->call.kind == CALL_ARRAY_BUILTIN)
@@ -2097,6 +1996,134 @@ static Value evaluate_general(
     diagnostics_runtime_errorf("E9001", "Provide a valid expression.", "invalid expression.\n");
 }
 
+/* Runs one iteration of a for loop body with the loop variable bound. */
+static int run_for_body(AstNode *node, Environment *environment, Value item, ExecutionResult *result)
+{
+    Environment *block = environment_create(environment);
+    define_variable(block, node->for_statement.variable, item);
+    *result = execute(node->for_statement.body, block);
+    environment_free(block);
+
+    if (result->returned)
+    {
+        return 0;
+    }
+
+    if (result->broke)
+    {
+        result->broke = 0;
+        return 0;
+    }
+
+    result->continued = 0;
+    return 1;
+}
+
+static long range_argument(Value value)
+{
+    if (value.type != VALUE_INT)
+    {
+        diagnostics_runtime_errorf("E3011", "usage: range(end), range(start, end) or range(start, end, step)", "range requires integers (got %s)", value_type_name(value.type));
+    }
+
+    return value.integer;
+}
+
+static ExecutionResult execute_for(AstNode *node, Environment *environment)
+{
+    ExecutionResult result = { 0, 0, 0, value_int(0) };
+    AstNode *iterable = node->for_statement.iterable;
+
+    /* for i in range(...) counts directly instead of building an array. */
+    if (iterable->type == AST_CALL && strcmp(iterable->call.name, "range") == 0 &&
+        iterable->call.argument_count >= 1 && iterable->call.argument_count <= 3)
+    {
+        long start = 0, end, step = 1;
+        int count = iterable->call.argument_count;
+
+        if (count == 1)
+        {
+            end = range_argument(evaluate(iterable->call.arguments[0], environment));
+        }
+        else
+        {
+            start = range_argument(evaluate(iterable->call.arguments[0], environment));
+            end = range_argument(evaluate(iterable->call.arguments[1], environment));
+
+            if (count == 3)
+            {
+                step = range_argument(evaluate(iterable->call.arguments[2], environment));
+            }
+        }
+
+        if (step == 0)
+        {
+            diagnostics_runtime_errorf("E3011", "use a positive step to count up or a negative one to count down", "range step cannot be 0");
+        }
+
+        for (long i = start; step > 0 ? i < end : i > end; i += step)
+        {
+            diagnostics_line = node->line;
+
+            if (!run_for_body(node, environment, value_int(i), &result))
+            {
+                return result;
+            }
+        }
+
+        return result;
+    }
+
+    /* Iterate over a copy, so changing the original inside the loop is safe. */
+    Value sequence = evaluate(iterable, environment);
+
+    if (sequence.type == VALUE_ARRAY)
+    {
+        for (int i = 0; i < sequence.array.count; i++)
+        {
+            diagnostics_line = node->line;
+
+            if (!run_for_body(node, environment, value_copy(&sequence.array.elements[i]), &result))
+            {
+                break;
+            }
+        }
+    }
+    else if (sequence.type == VALUE_MAP)
+    {
+        for (int i = 0; i < value_map_count(&sequence); i++)
+        {
+            diagnostics_line = node->line;
+
+            if (!run_for_body(node, environment, value_copy(value_map_key_at(&sequence, i)), &result))
+            {
+                break;
+            }
+        }
+    }
+    else if (sequence.type == VALUE_STRING)
+    {
+        size_t length = value_string_length(&sequence);
+
+        for (size_t i = 0; i < length; i++)
+        {
+            diagnostics_line = node->line;
+
+            if (!run_for_body(node, environment, value_string_n(sequence.string + i, 1), &result))
+            {
+                break;
+            }
+        }
+    }
+    else
+    {
+        diagnostics_runtime_errorf("E3025", "for works on arrays, maps (their keys), strings (their characters) and range(...)", "cannot loop over %s", value_type_name(sequence.type));
+    }
+
+    value_free(&sequence);
+    return result;
+}
+
 static ExecutionResult execute(
     AstNode *node,
     Environment *environment
@@ -2168,12 +2195,11 @@ static ExecutionResult execute(
                     break;
                 }
 
-                operand_type_error(
-                    target->value.type == VALUE_NONE && right.type == VALUE_NONE ? "E3018" : "E3018",
-                    TOKEN_PLUS,
-                    target->value.type,
-                    right.type
-                );
+                Value combined = binary_values(value_node, value_copy(&target->value), right);
+                target = find_assignable_variable(environment, node->variable_declaration.name);
+                value_free(&target->value);
+                target->value = combined;
+                break;
             }
 
             Value value = evaluate(
@@ -2208,6 +2234,9 @@ static ExecutionResult execute(
         case AST_UNARY:
         case AST_ARRAY:
         case AST_INDEX:
+        case AST_FLOAT:
+        case AST_MAP:
+        case AST_IMPORT:
             break;
             
         case AST_INDEX_ASSIGNMENT:
@@ -2220,35 +2249,15 @@ static ExecutionResult execute(
                 node->index_assignment.index,
                 environment
             );
-            Value *array = resolve_array_element(
+            Value *container = resolve_array_element(
                 node->index_assignment.array,
                 environment,
                 1
             );
 
-            if (array->type != VALUE_ARRAY)
-            {
-                value_free(&index);
-                value_free(&value);
-                diagnostics_runtime_errorf("E3008", NULL, "indexing requires an array (got %s)", value_type_name(array->type));
-            }
-
-            if (index.type != VALUE_INT)
-            {
-                value_free(&index);
-                value_free(&value);
-                diagnostics_runtime_errorf("E3009", NULL, "array index must be an integer (got %s)", value_type_name(index.type));
-            }
-
-            if (index.integer < 0 || index.integer >= array->array.count)
-            {
-                index_error(index.integer, array->array.count);
-            }
-
-            value_array_make_unique(array);
-            value_free(&array->array.elements[index.integer]);
-            array->array.elements[index.integer] = value;
-            value_free(&index);
+            Value *slot = index_place(container, index, 1, container->type == VALUE_MAP);
+            value_free(slot);
+            *slot = value;
             break;
         }
 
@@ -2364,6 +2373,9 @@ static ExecutionResult execute(
 
             break;
         }
+
+        case AST_FOR:
+            return execute_for(node, environment);
 
         case AST_BREAK:
             result.broke = 1;

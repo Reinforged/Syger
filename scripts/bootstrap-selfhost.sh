@@ -52,6 +52,10 @@ cmp "$BUILD/smoke.interpreter.out" "$BUILD/smoke.wrapper.out"
 "$CC" "${RTFLAGS[@]}" -I selfhost "$BUILD/semantics.stage1.c" selfhost/native_runtime.c -o "$BUILD/semantics.stage1"
 "$BUILD/Syger-stage0" tests/selfhost/semantics.sg | cmp tests/selfhost/semantics.expected.txt -
 "$BUILD/semantics.stage1" | cmp tests/selfhost/semantics.expected.txt -
+"$BUILD/SygerCompiler-stage1" tests/selfhost/features.sg "$BUILD/features.stage1.c" > /dev/null
+"$CC" "${RTFLAGS[@]}" -I selfhost "$BUILD/features.stage1.c" selfhost/native_runtime.c -o "$BUILD/features.stage1"
+"$BUILD/Syger-stage0" tests/selfhost/features.sg | cmp tests/selfhost/features.expected.txt -
+"$BUILD/features.stage1" | cmp tests/selfhost/features.expected.txt -
 
 CC="$CC" tests/run-error-tests.sh "$BUILD/Syger-stage0" "$BUILD/SygerCompiler-stage1"
 

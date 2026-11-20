@@ -3,6 +3,7 @@
 #include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 #include "diagnostics.h"
 
@@ -72,6 +73,12 @@ static void skip_whitespace(Lexer *lexer)
         {
             lexer->line++;
             advance_char(lexer);
+
+            if (lexer->bracket_depth > 0)
+            {
+                continue;
+            }
+
             lexer->at_line_start = 1;
             return;
         }
@@ -86,17 +93,26 @@ static Token string_token(Lexer *lexer)
 {
     int start_line = lexer->line;
 
-    while (!is_at_end(lexer) && peek_char(lexer) != '"')
+    while (!is_at_end(lexer) && peek_char(lexer) != '"' && peek_char(lexer) != '\n')
     {
-        if (peek_char(lexer) == '\n')
+        if (peek_char(lexer) == '\\')
         {
-            lexer->line++;
+            const char *escape_start = lexer->current;
+            advance_char(lexer);
+            char e = peek_char(lexer);
+
+            if (e != 'n' && e != 't' && e != 'r' && e != '"' && e != '\\')
+            {
+                lexer->start = escape_start;
+                lexer->current = escape_start + (e != '\0' && e != '\n' ? 2 : 1);
+                lexer_error(lexer, "E1006", "unknown escape sequence in string", "supported escapes are \\n \\t \\r \\\" and \\\\ (a backslash)");
+            }
         }
 
         advance_char(lexer);
     }
 
-    if (is_at_end(lexer))
+    if (is_at_end(lexer) || peek_char(lexer) == '\n')
     {
         lexer->current = lexer->start + 1;
         lexer->line = start_line;
@@ -269,17 +285,81 @@ static Token identifier_token(Lexer *lexer)
         return make_token(lexer, TOKEN_CONTINUE);
     }
 
+    if (length == 3 && memcmp(lexer->start, "for", 3) == 0)
+    {
+        return make_token(lexer, TOKEN_FOR);
+    }
+
+    if (length == 2 && memcmp(lexer->start, "in", 2) == 0)
+    {
+        return make_token(lexer, TOKEN_IN);
+    }
+
+    if (length == 6 && memcmp(lexer->start, "import", 6) == 0)
+    {
+        return make_token(lexer, TOKEN_IMPORT);
+    }
+
+    if (length == 2 && memcmp(lexer->start, "as", 2) == 0)
+    {
+        return make_token(lexer, TOKEN_AS);
+    }
+
     return make_token(lexer, TOKEN_IDENTIFIER);
 }
 
 static Token number_token(Lexer *lexer)
 {
-    while (isdigit((unsigned char)peek_char(lexer)))
+    TokenType type = TOKEN_NUMBER;
+
+    while (isdigit((unsigned char)peek_char(lexer)) || peek_char(lexer) == '_')
     {
         advance_char(lexer);
     }
 
-    return make_token(lexer, TOKEN_NUMBER);
+    if (peek_char(lexer) == '.' && isdigit((unsigned char)lexer->current[1]))
+    {
+        type = TOKEN_FLOAT;
+        advance_char(lexer);
+
+        while (isdigit((unsigned char)peek_char(lexer)) || peek_char(lexer) == '_')
+        {
+            advance_char(lexer);
+        }
+    }
+
+    if (peek_char(lexer) == 'e' || peek_char(lexer) == 'E')
+    {
+        const char *after = lexer->current + 1;
+
+        if (*after == '+' || *after == '-')
+        {
+            after++;
+        }
+
+        if (isdigit((unsigned char)*after))
+        {
+            type = TOKEN_FLOAT;
+            lexer->current = after;
+
+            while (isdigit((unsigned char)peek_char(lexer)))
+            {
+                advance_char(lexer);
+            }
+        }
+    }
+
+    if (isalpha((unsigned char)peek_char(lexer)))
+    {
+        while (isalnum((unsigned char)peek_char(lexer)))
+        {
+            advance_char(lexer);
+        }
+
+        lexer_error(lexer, "E1007", "invalid number", "numbers look like 42, 3.14 or 1.5e3; names can't start with a digit");
+    }
+
+    return make_token(lexer, type);
 }
 
 void lexer_init(Lexer *lexer, const char *source)
@@ -291,6 +371,7 @@ void lexer_init(Lexer *lexer, const char *source)
     lexer->indent_count = 1;
     lexer->pending_dedents = 0;
     lexer->at_line_start = 1;
+    lexer->bracket_depth = 0;
 }
 
 static int match_char(Lexer *lexer, char expected)
@@ -424,10 +505,23 @@ Token lexer_next(Lexer *lexer)
     switch (c)
     {
         case '(':
+            lexer->bracket_depth++;
             return make_token(lexer, TOKEN_LEFT_PAREN);
 
         case ')':
+            if (lexer->bracket_depth > 0) lexer->bracket_depth--;
             return make_token(lexer, TOKEN_RIGHT_PAREN);
+
+        case '{':
+            lexer->bracket_depth++;
+            return make_token(lexer, TOKEN_LEFT_BRACE);
+
+        case '}':
+            if (lexer->bracket_depth > 0) lexer->bracket_depth--;
+            return make_token(lexer, TOKEN_RIGHT_BRACE);
+
+        case ':':
+            return make_token(lexer, TOKEN_COLON);
             
         case ',':
             return make_token(lexer, TOKEN_COMMA);
@@ -483,9 +577,11 @@ Token lexer_next(Lexer *lexer)
             return make_token(lexer, TOKEN_PERCENT);
 
         case '[':
+            lexer->bracket_depth++;
             return make_token(lexer, TOKEN_LEFT_BRACKET);
 
         case ']':
+            if (lexer->bracket_depth > 0) lexer->bracket_depth--;
             return make_token(lexer, TOKEN_RIGHT_BRACKET);
     }
 

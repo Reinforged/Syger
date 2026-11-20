@@ -1,0 +1,6 @@
+error[E1006]: unknown escape sequence in string
+ --> tests/errors/e1006_unknown_escape.sg:3:10
+  |
+3 | bad = "C:\docs"
+  |          ^^
+  = help: supported escapes are \n \t \r \" and \\ (a backslash)

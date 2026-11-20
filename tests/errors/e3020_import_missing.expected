@@ -1,0 +1,6 @@
+error[E3020]: could not open 'tests/errors/data/missing.json'
+ --> tests/errors/e3020_import_missing.sg:1
+  |
+1 | import "data/missing.json" as settings
+  |
+  = help: import paths are relative to the .sg file that imports them

@@ -1,0 +1,144 @@
+# Maps, floats, escapes, for loops, string helpers, conversions and import.
+
+print("--- maps ---")
+person = {"name": "jef", "age": 30}
+print(person)
+print(person["name"])
+person["city"] = "Gent"
+person["age"] = person["age"] + 1
+print(person)
+print(length(person))
+print(keys(person))
+print(values(person))
+print(contains(person, "city"))
+print(contains(person, "zip"))
+print(get(person, "zip", "none given"))
+print(get([1, 2], 5, -1))
+copy = person
+copy["name"] = "ana"
+print(person["name"])
+print(copy["name"])
+nested = {
+    "list": [1, 2],
+    "inner": {"x": 1},
+}
+append(nested["list"], 3)
+nested["inner"]["y"] = 2
+print(nested)
+removed = remove(nested, "list")
+print(removed)
+print(nested)
+numbers = {1: "one", 2: "two"}
+print(numbers[2])
+print({"a": 1, "b": 2} == {"b": 2, "a": 1})
+print(type_of(person))
+print(to_string({"k": [1, 2.5]}))
+
+print("--- floats ---")
+print(3.14)
+print(1.5e3)
+print(1_000_000)
+print(7 / 2)
+print(7.0 / 2)
+print(2 * 0.5)
+print(0.1 + 0.2)
+print(10 % 3.5)
+print(-2.5)
+print(1 == 1.0)
+print(2.5 > 2)
+print(type_of(2.0))
+print(to_float("2.25") + 1)
+print(to_int("42") + 1)
+print(to_int(3.99))
+print(round(2.5))
+print(round(3.14159, 2))
+print(floor(-1.5))
+print(ceil(1.2))
+print(abs(-4))
+print(abs(-4.5))
+print(sqrt(16))
+print(sum([1, 2.5]))
+print(sum([]))
+print(min([3, 1.5, 2]))
+print(max(["pear", "apple"]))
+
+print("--- strings ---")
+print("tab:\tend")
+print("quote: \"hi\" and backslash: \\")
+print(length("a\nb"))
+print(split("a,b,,c", ","))
+print(split("  lots   of space "))
+print(trim("  padded  "))
+print(upper("Syger"))
+print(lower("SYGER"))
+print(replace("a-b-c", "-", "+"))
+print(starts_with("syger.sg", "syger"))
+print(ends_with("syger.sg", ".py"))
+print(contains("haystack", "st"))
+print(index_of("haystack", "st"))
+print("abc"[1])
+print("apple" < "banana")
+print([1, 2] + [3])
+words = ["pear", "apple", "fig"]
+sort(words)
+print(words)
+mixed = [3, 1.5, 2]
+sort(mixed)
+print(mixed)
+
+print("--- for ---")
+for n in [10, 20, 30]
+    print(n)
+for i in range(3)
+    print(i)
+for i in range(10, 0, -4)
+    print(i)
+for key in {"x": 1, "y": 2}
+    print(key)
+for c in "hey"
+    print(c)
+total = 0
+for i in range(100)
+    if i % 2 == 0
+        continue
+    if i > 9
+        break
+    total = total + i
+print(total)
+items = [1, 2, 3]
+for item in items
+    append(items, item * 10)
+print(items)
+print(range(2, 5))
+
+fun first_even(values)
+    for v in values
+        if v % 2 == 0
+            return v
+    return none
+
+print(first_even([3, 5, 8, 9]))
+print(first_even([1]))
+
+print("--- import ---")
+import "data/config.json" as config
+print(config["name"])
+print(config["version"] + 1)
+print(config["ratio"])
+print(config["tags"][1])
+print(config["owner"])
+print(config["escaped"])
+import "data/people.csv" as people
+print(length(people))
+for person in people
+    print(person["name"] + " " + to_string(person["age"]) + " " + person["city"] + " " + to_string(person["zip"]))
+import "data/scores.tsv" as scores
+print(scores)
+import "data/settings.env" as settings
+print(settings)
+import "data/constants.py" as py
+print(py)
+import "data/notes.txt"
+print(split(trim(notes), "\n"))
+print(load_error("tests/selfhost/data/config.json") == "")
+print(load_error("missing.json"))
